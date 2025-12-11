@@ -61,10 +61,36 @@ require_root() {
   fi
 }
 
+print_system_info() {
+  local os_id os_name os_ver kern arch
+
+  info "System information:"
+  if [ -f /etc/os-release ]; then
+    os_id=$(grep '^ID=' /etc/os-release 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '"')
+    os_name=$(grep '^NAME=' /etc/os-release 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '"')
+    os_ver=$(grep '^VERSION_ID=' /etc/os-release 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '"')
+    info "  OS ID: ${os_id:-unknown}"
+    info "  OS Name: ${os_name:-unknown}"
+    info "  OS Version: ${os_ver:-unknown}"
+  else
+    info "  /etc/os-release not found."
+  fi
+
+  kern=$(uname -r 2>/dev/null || echo unknown)
+  arch=$(uname -m 2>/dev/null || echo unknown)
+  info "  Kernel: $kern"
+  info "  Arch: $arch"
+}
+
 check_alpine() {
+  if [ ! -f /etc/os-release ]; then
+    error "/etc/os-release not found; this script is intended for Alpine Linux."
+    exit 1
+  fi
+
   if ! grep -q '^ID=alpine' /etc/os-release 2>/dev/null; then
-    warn "This script is designed for Alpine Linux, but this system does not report ID=alpine."
-    warn "Continuing anyway, but commands may fail."
+    error "This system is not Alpine Linux (expected ID=alpine). Aborting."
+    exit 1
   fi
 }
 
@@ -351,6 +377,7 @@ enable_sshd_service() {
 
 main() {
   require_root
+  print_system_info
   check_alpine
 
   set_root_password
