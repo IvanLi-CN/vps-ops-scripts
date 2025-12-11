@@ -79,10 +79,22 @@ configure_timezone() {
 
 set_root_password() {
   info "Now setting root password (you will be prompted by passwd)."
-  passwd root || {
-    error "Failed to set root password."
-    exit 1
-  }
+  while :; do
+    if passwd root; then
+      return 0
+    fi
+    warn "Failed to set root password."
+    printf 'Try again? [y/N]: '
+    read -r answer || answer=""
+    case "$answer" in
+      y|Y)
+        ;;
+      *)
+        error "Failed to set root password; aborting."
+        exit 1
+        ;;
+    esac
+  done
 }
 
 prompt_for_username() {
@@ -115,8 +127,8 @@ create_user_if_needed() {
     return 0
   fi
 
-  info "Creating user '$username' with default shell /bin/zsh..."
-  adduser -D -s /bin/zsh "$username" || {
+  info "Creating user '$username' with default shell /bin/sh (will switch to zsh later)..."
+  adduser -D -s /bin/sh "$username" || {
     error "Failed to create user '$username'."
     exit 1
   }
@@ -303,33 +315,39 @@ main() {
   require_root
   check_alpine
 
-  install_base_packages
-  configure_timezone
-
   set_root_password
 
   local username
   username="$(prompt_for_username)"
   create_user_if_needed "$username"
-  setup_zsh_for_user "$username"
 
   local setup_keys_choice
+  local want_setup_keys=0
   local ssh_disable_password=0
 
   printf 'Do you want to configure SSH key-based login for this user now? [y/N]: '
   read -r setup_keys_choice || setup_keys_choice=""
   case "$setup_keys_choice" in
     y|Y)
-      if setup_authorized_keys "$username" "$SSH_AUTH_KEYS_URL"; then
-        ssh_disable_password=1
-      else
-        ssh_disable_password=0
-      fi
+      want_setup_keys=1
       ;;
     *)
       info "Skipping SSH key-based login configuration."
       ;;
   esac
+
+  install_base_packages
+  configure_timezone
+
+  setup_zsh_for_user "$username"
+
+  if [ "$want_setup_keys" -eq 1 ]; then
+    if setup_authorized_keys "$username" "$SSH_AUTH_KEYS_URL"; then
+      ssh_disable_password=1
+    else
+      ssh_disable_password=0
+    fi
+  fi
 
   configure_sshd "$ssh_disable_password"
   enable_sshd_service
