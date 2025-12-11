@@ -11,6 +11,35 @@
 
 set -u
 
+read_tty() {
+  # Usage: read_tty VAR "prompt"
+  local __varname="$1"
+  shift
+  local __prompt="$*"
+
+  if [ -n "$__prompt" ]; then
+    if [ -r /dev/tty ]; then
+      printf '%s' "$__prompt" > /dev/tty
+    else
+      printf '%s' "$__prompt"
+    fi
+  fi
+
+  if [ -r /dev/tty ]; then
+    if ! read -r "$__varname" < /dev/tty; then
+      eval "$__varname=''"
+      return 1
+    fi
+  else
+    if ! read -r "$__varname"; then
+      eval "$__varname=''"
+      return 1
+    fi
+  fi
+
+  return 0
+}
+
 SSH_AUTH_KEYS_URL="https://webdav-syncthing.ivanli.cc/Ivan-Personal/Credentials/Public/authorized_keys-uys8y1bkrxi55v0gOJWtrKJ2uM9TLsUq"
 
 info() {
@@ -80,12 +109,15 @@ configure_timezone() {
 set_root_password() {
   info "Now setting root password (you will be prompted by passwd)."
   while :; do
-    if passwd root; then
+    if [ -r /dev/tty ]; then
+      if passwd root </dev/tty; then
+        return 0
+      fi
+    elif passwd root; then
       return 0
     fi
     warn "Failed to set root password."
-    printf 'Try again? [y/N]: '
-    read -r answer || answer=""
+    read_tty answer 'Try again? [y/N]: ' || answer=""
     case "$answer" in
       y|Y)
         ;;
@@ -101,8 +133,7 @@ prompt_for_username() {
   local username
 
   while :; do
-    printf 'Enter username to create: '
-    read -r username
+    read_tty username 'Enter username to create: ' || username=""
 
     case "$username" in
       ""|root)
@@ -134,10 +165,17 @@ create_user_if_needed() {
   }
 
   info "Now setting password for user '$username' (you will be prompted by passwd)."
-  passwd "$username" || {
-    error "Failed to set password for user '$username'."
-    exit 1
-  }
+  if [ -r /dev/tty ]; then
+    passwd "$username" </dev/tty || {
+      error "Failed to set password for user '$username'."
+      exit 1
+    }
+  else
+    passwd "$username" || {
+      error "Failed to set password for user '$username'."
+      exit 1
+    }
+  fi
 }
 
 setup_zsh_for_user() {
@@ -325,8 +363,7 @@ main() {
   local want_setup_keys=0
   local ssh_disable_password=0
 
-  printf 'Do you want to configure SSH key-based login for this user now? [y/N]: '
-  read -r setup_keys_choice || setup_keys_choice=""
+  read_tty setup_keys_choice 'Do you want to configure SSH key-based login for this user now? [y/N]: ' || setup_keys_choice=""
   case "$setup_keys_choice" in
     y|Y)
       want_setup_keys=1
