@@ -56,6 +56,10 @@ jobs:
           curl -fsSL "$XRAY_ZIP" -o xray.zip
           unzip -q xray.zip
           install -m 0755 xray /usr/local/bin/xray
+          # ensure geo assets exist so `xray run -test` won't error
+          install -d /usr/local/share/xray
+          install -m 0644 geoip.dat geosite.dat /usr/local/share/xray/
+          export XRAY_LOCATION_ASSET=/usr/local/share/xray
 
           # Monkeypatch script by redefining keygen helpers (append after shebang)
           cat > /workspace/xray/setup-xray-vless-ss.sh.head <<'EOS'
