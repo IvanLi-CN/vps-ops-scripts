@@ -57,11 +57,17 @@ jobs:
           unzip -q xray.zip
           install -m 0755 xray /usr/local/bin/xray
 
-          # Debug xray keygen output for visibility
+          # Generate reality keypair (handle new Xray output schema)
           reality_output=$(xray x25519 2>&1 || true)
           echo "$reality_output"
-          private_key=$(printf "%s" "$reality_output" | awk 'tolower($0) ~ /private key:/ {print $3}' | head -n1)
-          public_key=$(printf "%s" "$reality_output" | awk 'tolower($0) ~ /public key:/ {print $3}' | head -n1)
+          private_key=$(printf "%s" "$reality_output" | awk 'tolower($1) ~ /privatekey:|private/ {print $2}' | head -n1)
+          if [ -z "$private_key" ]; then
+            private_key=$(printf "%s" "$reality_output" | awk 'tolower($0) ~ /private key:/ {print $3}' | head -n1)
+          fi
+          public_key=$(xray x25519 -i "$private_key" 2>/dev/null | awk 'tolower($1) ~ /publickey:|public/ {print $2}' | head -n1)
+          if [ -z "$public_key" ]; then
+            public_key=$(printf "%s" "$reality_output" | awk 'tolower($0) ~ /public key:/ {print $3}' | head -n1)
+          fi
           if [ -z "$private_key" ] || [ -z "$public_key" ]; then
             echo "xray x25519 output parsing failed"; exit 1
           fi
