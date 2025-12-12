@@ -100,13 +100,23 @@ generate_uuid() {
 }
 
 generate_reality_keys() {
-  # prints: Private key: ... / Public key: ...
-  xray x25519
+  # openssl-based keypair to avoid xray x25519 output changes
+  tmp="$(mktemp)"
+  openssl genpkey -algorithm X25519 -out "${tmp}" >/dev/null 2>&1
+  priv="$(openssl pkey -in "${tmp}" -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")"
+  pub="$(openssl pkey -in "${tmp}" -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")"
+  rm -f "${tmp}"
+  echo "Private key: ${priv}"
+  echo "Public key: ${pub}"
 }
 
 derive_public_key_from_private() {
   _key_priv="$1"
-  xray x25519 -i "${_key_priv}" | awk '/Public key:/ {print $3}'
+  tmp="$(mktemp)"
+  printf "-----BEGIN PRIVATE KEY-----\n%s\n-----END PRIVATE KEY-----\n" "$(printf "%s" "${_key_priv}" | fold -w64)" > "${tmp}"
+  pub="$(openssl pkey -in "${tmp}" -inform PEM -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")"
+  rm -f "${tmp}"
+  printf "%s\n" "${pub}"
 }
 
 generate_ss2022_password() {
