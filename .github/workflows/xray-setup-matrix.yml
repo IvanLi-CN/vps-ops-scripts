@@ -57,11 +57,9 @@ jobs:
           unzip -q xray.zip
           install -m 0755 xray /usr/local/bin/xray
 
-          # Monkeypatch script using sed: drop old keygen funcs, prepend openssl versions
-          cp /workspace/xray/setup-xray-vless-ss.sh /workspace/xray/setup-xray-vless-ss.sh.bak
-          sed '/^generate_reality_keys() {/,/^}$/d;/^derive_public_key_from_private() {/,/^}$/d' \
-            /workspace/xray/setup-xray-vless-ss.sh.bak > /workspace/xray/setup-xray-vless-ss.sh.body
+          # Monkeypatch script by redefining keygen helpers (append after shebang)
           cat > /workspace/xray/setup-xray-vless-ss.sh.head <<'EOS'
+# patched keygen helpers (added by CI)
 generate_reality_keys(){
   tmp=$(mktemp)
   openssl genpkey -algorithm X25519 -out "$tmp" >/dev/null 2>&1
@@ -82,7 +80,9 @@ derive_public_key_from_private(){
 }
 
 EOS
-          cat /workspace/xray/setup-xray-vless-ss.sh.head /workspace/xray/setup-xray-vless-ss.sh.body > /workspace/xray/setup-xray-vless-ss.sh
+          # insert right after shebang to ensure override takes effect
+          { head -n1 /workspace/xray/setup-xray-vless-ss.sh; cat /workspace/xray/setup-xray-vless-ss.sh.head; tail -n +2 /workspace/xray/setup-xray-vless-ss.sh; } > /workspace/xray/setup-xray-vless-ss.sh.patched
+          mv /workspace/xray/setup-xray-vless-ss.sh.patched /workspace/xray/setup-xray-vless-ss.sh
 
           cd /workspace
 
