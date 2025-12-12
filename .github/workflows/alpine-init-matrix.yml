@@ -1,0 +1,85 @@
+name: Test Alpine Init Script
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "alpine/**"
+      - ".github/workflows/alpine-init-matrix.yml"
+  pull_request:
+    paths:
+      - "alpine/**"
+      - ".github/workflows/alpine-init-matrix.yml"
+
+jobs:
+  alpine-init:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        alpine: ["3.18", "3.19"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run alpine/init.sh on Alpine ${{ matrix.alpine }}
+        run: |
+          docker run --rm -i \
+            -v "$PWD":/workspace \
+            --workdir /workspace \
+            alpine:${{ matrix.alpine }} \
+            /bin/sh -c '
+              set -e
+
+              apk update >/dev/null
+              apk add --no-cache expect shadow tzdata openssh zsh git curl zoxide ca-certificates >/dev/null
+
+              cat > /tmp/run-init.expect <<'"'"'EOF'"'"'
+              #!/usr/bin/expect -f
+              set timeout 180
+
+              spawn /bin/sh /workspace/alpine/init.sh
+
+              expect {
+                -re "New password" {}
+                -re "password for root" {}
+              }
+              send "rootpass\r"
+
+              expect {
+                -re "Retype new password" {}
+                -re "Retype password" {}
+              }
+              send "rootpass\r"
+
+              expect -re "Enter username to create"
+              send "ciuser\r"
+
+              expect {
+                -re "New password" {}
+                -re "password for ciuser" {}
+              }
+              send "userpass\r"
+
+              expect {
+                -re "Retype new password" {}
+                -re "Retype password" {}
+              }
+              send "userpass\r"
+
+              expect -re "Do you want to configure SSH key-based login.*\\[y/N\\]"
+              send "n\r"
+
+              expect eof
+              EOF
+
+              chmod +x /tmp/run-init.expect
+              /tmp/run-init.expect
+
+              # Post-run assertions to verify the script effects
+              grep -q "^ciuser:" /etc/passwd
+              test -f /home/ciuser/.zshrc
+              test "$(cat /etc/timezone)" = "Asia/Shanghai"
+              sshd -t
+            '

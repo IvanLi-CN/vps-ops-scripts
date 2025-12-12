@@ -1,0 +1,68 @@
+name: Test Xray Setup Script
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "xray/**"
+      - ".github/workflows/xray-setup-matrix.yml"
+  pull_request:
+    paths:
+      - "xray/**"
+      - ".github/workflows/xray-setup-matrix.yml"
+
+jobs:
+  xray-setup:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: archlinux
+            image: archlinux:latest
+            xray_zip: https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+          - name: alpine
+            image: alpine:3.19
+            xray_zip: https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-musl-64.zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run setup-xray-vless-ss.sh in ${{ matrix.image }}
+        env:
+          XRAY_ZIP: ${{ matrix.xray_zip }}
+        run: |
+          docker run --rm -i \
+            -v "$PWD":/workspace \
+            --workdir /workspace \
+            --name xray-ci-${{ matrix.name }} \
+            ${{ matrix.image }} \
+            /bin/sh -c '
+              set -e
+
+              if command -v apk >/dev/null 2>&1; then
+                apk update >/dev/null
+                apk add --no-cache curl unzip tzdata ca-certificates openssl >/dev/null
+              else
+                pacman -Sy --noconfirm curl unzip ca-certificates tzdata openssl >/dev/null
+              fi
+
+              mkdir -p /tmp/xray && cd /tmp/xray
+              curl -fsSL "$XRAY_ZIP" -o xray.zip
+              unzip -q xray.zip
+              install -m 0755 xray /usr/local/bin/xray
+
+              cd /workspace
+
+              # Feed answers to the interactive prompts:
+              # 1) service name (empty to accept default)
+              # 2) REALITY domain (required)
+              # 3) VLESS port (default 443)
+              # 4) SS2022 port (default 8443)
+              printf "\nexample.com\n443\n8443\n" | /bin/sh ./xray/setup-xray-vless-ss.sh
+
+              test -f /usr/local/etc/xray/vless-ss-reality.yaml
+              grep -q "example.com" /usr/local/etc/xray/vless-ss-reality.yaml
+              xray run -test -c /usr/local/etc/xray/vless-ss-reality.yaml -format yaml
+            '
