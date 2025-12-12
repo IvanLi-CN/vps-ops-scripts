@@ -103,8 +103,9 @@ generate_reality_keys() {
   # openssl-based keypair to avoid xray x25519 output changes
   tmp="$(mktemp)"
   openssl genpkey -algorithm X25519 -out "${tmp}" >/dev/null 2>&1
-  priv="$(openssl pkey -in "${tmp}" -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")"
-  pub="$(openssl pkey -in "${tmp}" -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")"
+  # Xray REALITY expects x25519 keys in base64url (no padding), same as `xray x25519` output.
+  priv="$(openssl pkey -in "${tmp}" -outform DER 2>/dev/null | tail -c 32 | base64 | tr '+/' '-_' | tr -d '\n=')"
+  pub="$(openssl pkey -in "${tmp}" -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr '+/' '-_' | tr -d '\n=')"
   rm -f "${tmp}"
   echo "Private key: ${priv}"
   echo "Public key: ${pub}"
