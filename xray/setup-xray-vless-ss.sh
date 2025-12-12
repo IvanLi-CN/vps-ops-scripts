@@ -271,6 +271,11 @@ install_systemd_service() {
 
   service_file="/etc/systemd/system/${service_name}.service"
 
+  asset_env_line=""
+  if [ -n "${XRAY_LOCATION_ASSET:-}" ]; then
+    asset_env_line="Environment=XRAY_LOCATION_ASSET=${XRAY_LOCATION_ASSET}"
+  fi
+
   cat > "${service_file}" <<EOF
 [Unit]
 Description=Xray VLESS+Reality & SS2022 service
@@ -279,6 +284,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+${asset_env_line}
 ExecStart=$(command -v xray) run -c ${config_path} -format yaml
 Restart=on-failure
 User=root
