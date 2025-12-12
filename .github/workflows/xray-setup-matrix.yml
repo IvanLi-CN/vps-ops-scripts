@@ -36,6 +36,7 @@ jobs:
           docker run --rm -i \
             -v "$PWD":/workspace \
             --workdir /workspace \
+            -e XRAY_ZIP \
             --name xray-ci-${{ matrix.name }} \
             ${{ matrix.image }} \
             /bin/sh -c '
@@ -49,6 +50,7 @@ jobs:
               fi
 
               mkdir -p /tmp/xray && cd /tmp/xray
+              echo "Downloading Xray from $XRAY_ZIP"
               curl -fsSL "$XRAY_ZIP" -o xray.zip
               unzip -q xray.zip
               install -m 0755 xray /usr/local/bin/xray
