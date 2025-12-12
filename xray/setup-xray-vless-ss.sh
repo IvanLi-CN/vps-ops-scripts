@@ -173,12 +173,12 @@ create_config_from_template() {
   config_path="${config_dir}/${CONFIG_FILE_NAME}"
 
   cat <<'EOF' | sed \
-    -e "s|\$PORT_VLESS\$|${port_vless}|g" \
-    -e "s|\$PORT_SS\$|${port_ss}|g" \
-    -e "s|\$DOMAIN\$|${domain}|g" \
-    -e "s|\$ID\$|${uuid}|g" \
-    -e "s|\$PRIVATE_KEY\$|${private_key}|g" \
-    -e "s|\$PASSWORD\$|${ss_password}|g" \
+    -e "s|\\\$PORT_VLESS\\\$|${port_vless}|g" \
+    -e "s|\\\$PORT_SS\\\$|${port_ss}|g" \
+    -e "s|\\\$DOMAIN\\\$|${domain}|g" \
+    -e "s|\\\$ID\\\$|${uuid}|g" \
+    -e "s|\\\$PRIVATE_KEY\\\$|${private_key}|g" \
+    -e "s|\\\$PASSWORD\\\$|${ss_password}|g" \
     > "${config_path}"
 log:
   loglevel: info
