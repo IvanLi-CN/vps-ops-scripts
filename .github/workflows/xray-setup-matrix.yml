@@ -57,32 +57,32 @@ jobs:
           unzip -q xray.zip
           install -m 0755 xray /usr/local/bin/xray
 
-          # Monkeypatch script using awk (no extra deps) to override key gens with openssl
-          awk '
-            /^main[[:space:]]*"\$@"/ {
-              print "generate_reality_keys(){"
-              print "  tmp=$(mktemp)"
-              print "  openssl genpkey -algorithm X25519 -out \"$tmp\" >/dev/null 2>&1"
-              print "  priv=$(openssl pkey -in \"$tmp\" -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d \"\\n\")"
-              print "  pub=$(openssl pkey -in \"$tmp\" -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d \"\\n\")"
-              print "  rm -f \"$tmp\""
-              print "  echo \"Private key: $priv\""
-              print "  echo \"Public key: $pub\""
-              print "}"
-              print ""
-              print "derive_public_key_from_private(){"
-              print "  p=\"$1\""
-              print "  tmp=$(mktemp)"
-              print "  printf \"-----BEGIN PRIVATE KEY-----\\n%s\\n-----END PRIVATE KEY-----\\n\" \"$(printf \"%s\" \"$p\" | fold -w64)\" > \"$tmp\""
-              print "  pub=$(openssl pkey -in \"$tmp\" -inform PEM -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d \"\\n\")"
-              print "  rm -f \"$tmp\""
-              print "  printf \"%s\\n\" \"$pub\""
-              print "}"
-              print ""
-            }
-            {print}
-          ' /workspace/xray/setup-xray-vless-ss.sh > /workspace/xray/setup-xray-vless-ss.sh.new
-          mv /workspace/xray/setup-xray-vless-ss.sh.new /workspace/xray/setup-xray-vless-ss.sh
+          # Monkeypatch script using sed: drop old keygen funcs, prepend openssl versions
+          cp /workspace/xray/setup-xray-vless-ss.sh /workspace/xray/setup-xray-vless-ss.sh.bak
+          sed '/^generate_reality_keys() {/,/^}$/d;/^derive_public_key_from_private() {/,/^}$/d' \
+            /workspace/xray/setup-xray-vless-ss.sh.bak > /workspace/xray/setup-xray-vless-ss.sh.body
+          cat > /workspace/xray/setup-xray-vless-ss.sh.head <<'EOS'
+generate_reality_keys(){
+  tmp=$(mktemp)
+  openssl genpkey -algorithm X25519 -out "$tmp" >/dev/null 2>&1
+  priv=$(openssl pkey -in "$tmp" -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")
+  pub=$(openssl pkey -in "$tmp" -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")
+  rm -f "$tmp"
+  echo "Private key: $priv"
+  echo "Public key: $pub"
+}
+
+derive_public_key_from_private(){
+  p="$1"
+  tmp=$(mktemp)
+  printf "-----BEGIN PRIVATE KEY-----\n%s\n-----END PRIVATE KEY-----\n" "$(printf "%s" "$p" | fold -w64)" > "$tmp"
+  pub=$(openssl pkey -in "$tmp" -inform PEM -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")
+  rm -f "$tmp"
+  printf "%s\n" "$pub"
+}
+
+EOS
+          cat /workspace/xray/setup-xray-vless-ss.sh.head /workspace/xray/setup-xray-vless-ss.sh.body > /workspace/xray/setup-xray-vless-ss.sh
 
           cd /workspace
 
