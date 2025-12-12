@@ -183,7 +183,7 @@ jobs:
           set -e
 
           apk update >/dev/null
-          apk add --no-cache curl unzip jq ca-certificates openssl openrc tzdata >/dev/null
+          apk add --no-cache curl unzip jq ca-certificates openssl openrc tzdata gcompat >/dev/null
 
           # OpenRC needs a softlevel file; in containers it is commonly missing.
           mkdir -p /run/openrc
@@ -193,7 +193,8 @@ jobs:
           release_json=$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest)
           XRAY_ZIP=$(printf "%s" "$release_json" | jq -r '.assets[] | select(.name=="Xray-linux-musl-64.zip") | .browser_download_url' | head -n1)
           if [ -z "$XRAY_ZIP" ]; then
-            XRAY_ZIP=$(printf "%s" "$release_json" | jq -r '.assets[] | select(.name | contains("Xray-linux-musl-64.zip")) | .browser_download_url' | head -n1)
+            # fallback to glibc build when musl build is not published
+            XRAY_ZIP=$(printf "%s" "$release_json" | jq -r '.assets[] | select(.name | contains("Xray-linux-64.zip")) | .browser_download_url' | head -n1)
           fi
           if [ -z "$XRAY_ZIP" ]; then
             echo "Cannot locate Xray binary download URL"; exit 1
