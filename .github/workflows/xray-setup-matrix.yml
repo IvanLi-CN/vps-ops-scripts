@@ -63,27 +63,27 @@ jobs:
 
           # Monkeypatch script by redefining keygen helpers (append after shebang)
           cat > /workspace/xray/setup-xray-vless-ss.sh.head <<'EOS'
-# patched keygen helpers (added by CI)
-generate_reality_keys(){
-  tmp=$(mktemp)
-  openssl genpkey -algorithm X25519 -out "$tmp" >/dev/null 2>&1
-  priv=$(openssl pkey -in "$tmp" -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")
-  pub=$(openssl pkey -in "$tmp" -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")
-  rm -f "$tmp"
-  echo "Private key: $priv"
-  echo "Public key: $pub"
-}
+          # patched keygen helpers (added by CI)
+          generate_reality_keys(){
+            tmp=$(mktemp)
+            openssl genpkey -algorithm X25519 -out "$tmp" >/dev/null 2>&1
+            priv=$(openssl pkey -in "$tmp" -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")
+            pub=$(openssl pkey -in "$tmp" -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")
+            rm -f "$tmp"
+            echo "Private key: $priv"
+            echo "Public key: $pub"
+          }
 
-derive_public_key_from_private(){
-  p="$1"
-  tmp=$(mktemp)
-  printf "-----BEGIN PRIVATE KEY-----\n%s\n-----END PRIVATE KEY-----\n" "$(printf "%s" "$p" | fold -w64)" > "$tmp"
-  pub=$(openssl pkey -in "$tmp" -inform PEM -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")
-  rm -f "$tmp"
-  printf "%s\n" "$pub"
-}
+          derive_public_key_from_private(){
+            p="$1"
+            tmp=$(mktemp)
+            printf "-----BEGIN PRIVATE KEY-----\n%s\n-----END PRIVATE KEY-----\n" "$(printf "%s" "$p" | fold -w64)" > "$tmp"
+            pub=$(openssl pkey -in "$tmp" -inform PEM -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")
+            rm -f "$tmp"
+            printf "%s\n" "$pub"
+          }
 
-EOS
+          EOS
           # insert right after shebang to ensure override takes effect
           { head -n1 /workspace/xray/setup-xray-vless-ss.sh; cat /workspace/xray/setup-xray-vless-ss.sh.head; tail -n +2 /workspace/xray/setup-xray-vless-ss.sh; } > /workspace/xray/setup-xray-vless-ss.sh.patched
           mv /workspace/xray/setup-xray-vless-ss.sh.patched /workspace/xray/setup-xray-vless-ss.sh
