@@ -57,6 +57,15 @@ jobs:
           unzip -q xray.zip
           install -m 0755 xray /usr/local/bin/xray
 
+          # Debug xray keygen output for visibility
+          reality_output=$(xray x25519 2>&1 || true)
+          echo "$reality_output"
+          private_key=$(printf "%s" "$reality_output" | awk 'tolower($0) ~ /private key:/ {print $3}' | head -n1)
+          public_key=$(printf "%s" "$reality_output" | awk 'tolower($0) ~ /public key:/ {print $3}' | head -n1)
+          if [ -z "$private_key" ] || [ -z "$public_key" ]; then
+            echo "xray x25519 output parsing failed"; exit 1
+          fi
+
           cd /workspace
 
           # Feed answers to the interactive prompts:
