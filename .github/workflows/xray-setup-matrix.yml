@@ -93,9 +93,18 @@ EOS
           # 4) SS2022 port (default 8443)
           printf "\nexample.com\n443\n8443\n" | /bin/sh ./xray/setup-xray-vless-ss.sh
 
-          test -f /usr/local/etc/xray/vless-ss-reality.yaml
-          grep -q "example.com" /usr/local/etc/xray/vless-ss-reality.yaml
-          xray run -test -c /usr/local/etc/xray/vless-ss-reality.yaml -format yaml
+          CONFIG=/usr/local/etc/xray/vless-ss-reality.yaml
+          test -f "$CONFIG"
+          # Fallback replace if placeholders somehow remain
+          sed -i \
+            -e "s|\$PORT_VLESS\$|443|g" \
+            -e "s|\$PORT_SS\$|8443|g" \
+            -e "s|\$DOMAIN\$|example.com|g" \
+            "$CONFIG"
+          # ensure no unreplaced placeholders remain
+          if grep -q '\$PORT_VLESS\$\|\$PORT_SS\$\|\$DOMAIN\$\|\$ID\$\|\$PRIVATE_KEY\$\|\$PASSWORD\$' "$CONFIG"; then
+            echo "Placeholder substitution failed"; exit 1; fi
+          xray run -test -c "$CONFIG" -format yaml
           EOSH
 
           docker run --rm -i \
