@@ -36,9 +36,9 @@ jobs:
 
           if command -v apk >/dev/null 2>&1; then
             apk update >/dev/null
-            apk add --no-cache curl unzip tzdata ca-certificates openssl jq gcompat >/dev/null
+            apk add --no-cache curl unzip tzdata ca-certificates openssl jq gcompat perl >/dev/null
           else
-            pacman -Sy --noconfirm curl unzip ca-certificates tzdata openssl jq >/dev/null
+            pacman -Sy --noconfirm curl unzip ca-certificates tzdata openssl jq perl >/dev/null
           fi
 
           mkdir -p /tmp/xray && cd /tmp/xray
