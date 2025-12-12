@@ -60,7 +60,7 @@ jobs:
           # Monkeypatch script to generate x25519 keys via openssl (new Xray output lacks PublicKey)
           perl -0777 -pi -e '
             s@generate_reality_keys\(\)\s*\{.*?^}\n@generate_reality_keys(){\n  tmp=\\$(mktemp)\n  openssl genpkey -algorithm X25519 -out "\\$tmp" >/dev/null 2>&1\n  priv=\\$(openssl pkey -in "\\$tmp" -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\\\\n")\n  pub=\\$(openssl pkey -in "\\$tmp" -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\\\\n")\n  rm -f "\\$tmp"\n  echo "Private key: \\$priv"\n  echo "Public key: \\$pub"\n}\n@ms;
-            s@derive_public_key_from_private\(\)\s*\{.*?^}\n@derive_public_key_from_private(){\n  p="\\$1"\n  tmp=\\$(mktemp)\n  printf "-----BEGIN PRIVATE KEY-----\n%s\n-----END PRIVATE KEY-----\n" "\\$(printf \\"%s\\" "\\$p" | fold -w64)" > "\\$tmp"\n  pub=\\$(openssl pkey -in "\\$tmp" -inform PEM -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\\\\n")\n  rm -f "\\$tmp"\n  printf "%s\n" "\\$pub"\n}\n@ms;
+            s@derive_public_key_from_private\(\)\s*\{.*?^}\n@derive_public_key_from_private(){\n  p="\\$1"\n  tmp=\\$(mktemp)\n  printf \\\'-----BEGIN PRIVATE KEY-----\\n%s\\n-----END PRIVATE KEY-----\\n\\\' "\\$(printf \\\\\\'%s\\\\\\' "\\$p" | fold -w64)" > "\\$tmp"\n  pub=\\$(openssl pkey -in "\\$tmp" -inform PEM -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\\\\n")\n  rm -f "\\$tmp"\n  printf \\\'%s\\n\\\' "\\$pub"\n}\n@ms;
           ' /workspace/xray/setup-xray-vless-ss.sh
 
           cd /workspace
