@@ -371,7 +371,13 @@ EOF
   chmod +x "${service_file}"
 
   rc-update add "${service_name}" default || true
-  rc-service "${service_name}" restart || rc-service "${service_name}" start
+  # For first-time setup, avoid `restart || start` because OpenRC may return non-zero
+  # while a background service is still starting, which can lead to a second start attempt.
+  if rc-service "${service_name}" status >/dev/null 2>&1; then
+    rc-service "${service_name}" restart
+  else
+    rc-service "${service_name}" start
+  fi
   rc-service "${service_name}" status || true
 }
 
