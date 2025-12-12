@@ -383,10 +383,10 @@ setup_service() {
       install_openrc_service "${service_name}" "${config_path}"
       ;;
     *)
-      echo "Could not detect supported init system (systemd or OpenRC)."
+      echo "Could not detect supported init system (systemd or OpenRC); skipping service setup."
       echo "You can start Xray manually, for example:"
       echo "  $(command -v xray) run -c ${config_path} --format yaml"
-      return 1
+      return 0
       ;;
   esac
 }
