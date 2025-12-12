@@ -91,6 +91,7 @@ EOS
           # 2) REALITY domain (required)
           # 3) VLESS port (default 443)
           # 4) SS2022 port (default 8443)
+          set -x
           printf "\nexample.com\n443\n8443\n" | /bin/sh ./xray/setup-xray-vless-ss.sh
 
           CONFIG=/usr/local/etc/xray/vless-ss-reality.yaml
@@ -101,6 +102,10 @@ EOS
             -e "s|\$PORT_SS\$|8443|g" \
             -e "s|\$DOMAIN\$|example.com|g" \
             "$CONFIG"
+          echo "------ rendered config (head) ------"
+          sed -n '1,80p' "$CONFIG"
+          echo "------ rendered config (tail) ------"
+          tail -n 40 "$CONFIG"
           # ensure no unreplaced placeholders remain
           if grep -q '\$PORT_VLESS\$\|\$PORT_SS\$\|\$DOMAIN\$\|\$ID\$\|\$PRIVATE_KEY\$\|\$PASSWORD\$' "$CONFIG"; then
             echo "Placeholder substitution failed"; exit 1; fi
