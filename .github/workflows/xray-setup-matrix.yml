@@ -37,41 +37,41 @@ jobs:
             --name xray-ci-${{ matrix.name }} \
             ${{ matrix.image }} \
             /bin/sh <<'EOSH'
-set -e
+              set -e
 
-if command -v apk >/dev/null 2>&1; then
-  apk update >/dev/null
-  apk add --no-cache curl unzip tzdata ca-certificates openssl jq gcompat >/dev/null
-else
-  pacman -Sy --noconfirm curl unzip ca-certificates tzdata openssl jq >/dev/null
-fi
+              if command -v apk >/dev/null 2>&1; then
+                apk update >/dev/null
+                apk add --no-cache curl unzip tzdata ca-certificates openssl jq gcompat >/dev/null
+              else
+                pacman -Sy --noconfirm curl unzip ca-certificates tzdata openssl jq >/dev/null
+              fi
 
-mkdir -p /tmp/xray && cd /tmp/xray
+              mkdir -p /tmp/xray && cd /tmp/xray
 
-release_json=$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest)
-XRAY_ZIP=$(printf "%s" "$release_json" | jq -r '.assets[] | select(.name=="${{ matrix.asset_pattern }}") | .browser_download_url' | head -n1)
-if [ -z "$XRAY_ZIP" ]; then
-  XRAY_ZIP=$(printf "%s" "$release_json" | jq -r '.assets[] | select(.name | contains("Xray-linux-64.zip")) | .browser_download_url' | head -n1)
-fi
-if [ -z "$XRAY_ZIP" ]; then
-  echo "Cannot locate Xray binary download URL"; exit 1
-fi
+              release_json=$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest)
+              XRAY_ZIP=$(printf "%s" "$release_json" | jq -r '.assets[] | select(.name=="${{ matrix.asset_pattern }}") | .browser_download_url' | head -n1)
+              if [ -z "$XRAY_ZIP" ]; then
+                XRAY_ZIP=$(printf "%s" "$release_json" | jq -r '.assets[] | select(.name | contains("Xray-linux-64.zip")) | .browser_download_url' | head -n1)
+              fi
+              if [ -z "$XRAY_ZIP" ]; then
+                echo "Cannot locate Xray binary download URL"; exit 1
+              fi
 
-echo "Downloading Xray from $XRAY_ZIP"
-curl -fsSL "$XRAY_ZIP" -o xray.zip
-unzip -q xray.zip
-install -m 0755 xray /usr/local/bin/xray
+              echo "Downloading Xray from $XRAY_ZIP"
+              curl -fsSL "$XRAY_ZIP" -o xray.zip
+              unzip -q xray.zip
+              install -m 0755 xray /usr/local/bin/xray
 
-cd /workspace
+              cd /workspace
 
-# Feed answers to the interactive prompts:
-# 1) service name (empty to accept default)
-# 2) REALITY domain (required)
-# 3) VLESS port (default 443)
-# 4) SS2022 port (default 8443)
-printf "\nexample.com\n443\n8443\n" | /bin/sh ./xray/setup-xray-vless-ss.sh
+              # Feed answers to the interactive prompts:
+              # 1) service name (empty to accept default)
+              # 2) REALITY domain (required)
+              # 3) VLESS port (default 443)
+              # 4) SS2022 port (default 8443)
+              printf "\nexample.com\n443\n8443\n" | /bin/sh ./xray/setup-xray-vless-ss.sh
 
-test -f /usr/local/etc/xray/vless-ss-reality.yaml
-grep -q "example.com" /usr/local/etc/xray/vless-ss-reality.yaml
-xray run -test -c /usr/local/etc/xray/vless-ss-reality.yaml -format yaml
-EOSH
+              test -f /usr/local/etc/xray/vless-ss-reality.yaml
+              grep -q "example.com" /usr/local/etc/xray/vless-ss-reality.yaml
+              xray run -test -c /usr/local/etc/xray/vless-ss-reality.yaml -format yaml
+            EOSH
