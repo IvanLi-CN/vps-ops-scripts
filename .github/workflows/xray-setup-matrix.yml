@@ -91,24 +91,110 @@ jobs:
             ${{ matrix.image }} \
             /bin/sh /tmp/xray-ci.sh
 
-  xray-setup-systemd:
+  xray-setup-arch-systemd:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update -y >/dev/null
-          sudo apt-get install -y curl unzip jq ca-certificates >/dev/null
-
-      - name: Install Xray (binary + geo assets)
+      - name: Build Arch Linux systemd test image
         run: |
           set -e
-          mkdir -p /tmp/xray && cd /tmp/xray
+          cat > /tmp/Dockerfile.arch-systemd <<'EOF'
+          FROM archlinux:latest
+          RUN pacman -Syu --noconfirm --needed \
+                systemd systemd-sysvcompat \
+                curl unzip jq ca-certificates openssl perl python \
+              && yes | pacman -Scc
+          STOPSIGNAL SIGRTMIN+3
+          CMD ["/sbin/init"]
+          EOF
+          docker build -t arch-systemd-test -f /tmp/Dockerfile.arch-systemd /tmp
 
+      - name: Boot Arch Linux systemd container
+        run: |
+          set -e
+          docker run --privileged --cgroupns=host -d \
+            --name arch-sysd \
+            --tmpfs /run --tmpfs /tmp \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            -v "$PWD":/workspace \
+            --workdir /workspace \
+            arch-systemd-test
+
+          # Wait for systemd (running inside the container) to be ready.
+          for i in $(seq 1 40); do
+            state="$(docker exec arch-sysd systemctl is-system-running 2>/dev/null || true)"
+            if [ "$state" = "running" ] || [ "$state" = "degraded" ]; then
+              break
+            fi
+            sleep 1
+          done
+          state="$(docker exec arch-sysd systemctl is-system-running 2>/dev/null || true)"
+          echo "systemd state: $state"
+          if [ "$state" != "running" ] && [ "$state" != "degraded" ]; then
+            docker logs arch-sysd || true
+            exit 1
+          fi
+
+      - name: Install Xray (binary + geo assets) in Arch container
+        run: |
+          set -e
+          docker exec arch-sysd sh -lc '
+            set -e
+            mkdir -p /tmp/xray && cd /tmp/xray
+            release_json=$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest)
+            XRAY_ZIP=$(printf "%s" "$release_json" | jq -r ".assets[] | select(.name==\"Xray-linux-64.zip\") | .browser_download_url" | head -n1)
+            test -n "$XRAY_ZIP"
+            echo "Downloading Xray from $XRAY_ZIP"
+            curl -fsSL "$XRAY_ZIP" -o xray.zip
+            unzip -q xray.zip
+            install -m 0755 xray /usr/local/bin/xray
+            install -d /usr/local/share/xray
+            install -m 0644 geoip.dat geosite.dat /usr/local/share/xray/
+          '
+
+      - name: Run setup script and assert systemd service (Arch)
+        run: |
+          set -e
+          docker exec arch-sysd sh -lc '
+            set -e
+            export XRAY_LOCATION_ASSET=/usr/local/share/xray
+            printf "xray-ci\nexample.com\n14443\n18443\n" | /bin/sh /workspace/xray/setup-xray-vless-ss.sh
+            systemctl is-enabled xray-ci.service
+            systemctl is-active xray-ci.service
+          '
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f arch-sysd >/dev/null 2>&1 || true
+
+  xray-setup-alpine-openrc:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run setup script and assert OpenRC service (Alpine)
+        run: |
+          set -e
+          cat > /tmp/xray-openrc-ci.sh <<'EOSH'
+          set -e
+
+          apk update >/dev/null
+          apk add --no-cache curl unzip jq ca-certificates openssl openrc tzdata >/dev/null
+
+          # OpenRC needs a softlevel file; in containers it is commonly missing.
+          mkdir -p /run/openrc
+          touch /run/openrc/softlevel
+
+          mkdir -p /tmp/xray && cd /tmp/xray
           release_json=$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest)
-          XRAY_ZIP=$(printf "%s" "$release_json" | jq -r '.assets[] | select(.name=="Xray-linux-64.zip") | .browser_download_url' | head -n1)
+          XRAY_ZIP=$(printf "%s" "$release_json" | jq -r '.assets[] | select(.name=="Xray-linux-musl-64.zip") | .browser_download_url' | head -n1)
+          if [ -z "$XRAY_ZIP" ]; then
+            XRAY_ZIP=$(printf "%s" "$release_json" | jq -r '.assets[] | select(.name | contains("Xray-linux-musl-64.zip")) | .browser_download_url' | head -n1)
+          fi
           if [ -z "$XRAY_ZIP" ]; then
             echo "Cannot locate Xray binary download URL"; exit 1
           fi
@@ -116,23 +202,21 @@ jobs:
           echo "Downloading Xray from $XRAY_ZIP"
           curl -fsSL "$XRAY_ZIP" -o xray.zip
           unzip -q xray.zip
+          install -m 0755 xray /usr/local/bin/xray
+          install -d /usr/local/share/xray
+          install -m 0644 geoip.dat geosite.dat /usr/local/share/xray/
+          export XRAY_LOCATION_ASSET=/usr/local/share/xray
 
-          sudo install -m 0755 xray /usr/local/bin/xray
-          sudo install -d /usr/local/share/xray
-          sudo install -m 0644 geoip.dat geosite.dat /usr/local/share/xray/
+          cd /workspace
+          printf "xray-ci\nexample.com\n14443\n18443\n" | /bin/sh ./xray/setup-xray-vless-ss.sh
 
-      - name: Run setup script (systemd path)
-        run: |
-          set -e
-          sudo env XRAY_LOCATION_ASSET=/usr/local/share/xray sh -c 'printf "xray-ci\nexample.com\n14443\n18443\n" | /bin/sh ./xray/setup-xray-vless-ss.sh'
+          test -x /etc/init.d/xray-ci
+          rc-service xray-ci status
+          EOSH
 
-          sudo systemctl is-enabled xray-ci.service
-          sudo systemctl is-active xray-ci.service
-
-      - name: Cleanup
-        if: always()
-        run: |
-          sudo systemctl disable --now xray-ci.service >/dev/null 2>&1 || true
-          sudo rm -f /etc/systemd/system/xray-ci.service || true
-          sudo systemctl daemon-reload >/dev/null 2>&1 || true
-          sudo rm -rf /usr/local/etc/xray /var/log/xray || true
+          docker run --rm -i \
+            -v "$PWD":/workspace \
+            -v /tmp/xray-openrc-ci.sh:/tmp/xray-openrc-ci.sh:ro \
+            --workdir /workspace \
+            alpine:3.19 \
+            /bin/sh /tmp/xray-openrc-ci.sh
