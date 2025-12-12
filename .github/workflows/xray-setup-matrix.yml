@@ -20,23 +20,20 @@ jobs:
         include:
           - name: archlinux
             image: archlinux:latest
-            xray_zip: https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+            asset_pattern: Xray-linux-64.zip
           - name: alpine
             image: alpine:3.19
-            xray_zip: https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-musl-64.zip
+            asset_pattern: Xray-linux-musl-64.zip
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Run setup-xray-vless-ss.sh in ${{ matrix.image }}
-        env:
-          XRAY_ZIP: ${{ matrix.xray_zip }}
         run: |
           docker run --rm -i \
             -v "$PWD":/workspace \
             --workdir /workspace \
-            -e XRAY_ZIP \
             --name xray-ci-${{ matrix.name }} \
             ${{ matrix.image }} \
             /bin/sh -c '
@@ -44,12 +41,22 @@ jobs:
 
               if command -v apk >/dev/null 2>&1; then
                 apk update >/dev/null
-                apk add --no-cache curl unzip tzdata ca-certificates openssl >/dev/null
+                apk add --no-cache curl unzip tzdata ca-certificates openssl jq gcompat >/dev/null
               else
-                pacman -Sy --noconfirm curl unzip ca-certificates tzdata openssl >/dev/null
+                pacman -Sy --noconfirm curl unzip ca-certificates tzdata openssl jq >/dev/null
               fi
 
               mkdir -p /tmp/xray && cd /tmp/xray
+
+              release_json=$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest)
+              XRAY_ZIP=$(printf "%s" "$release_json" | jq -r ".assets[] | select(.name==\"${{ matrix.asset_pattern }}\") | .browser_download_url" | head -n1)
+              if [ -z "$XRAY_ZIP" ]; then
+                XRAY_ZIP=$(printf "%s" "$release_json" | jq -r '.assets[] | select(.name | contains("Xray-linux-64.zip")) | .browser_download_url' | head -n1)
+              fi
+              if [ -z "$XRAY_ZIP" ]; then
+                echo "Cannot locate Xray binary download URL"; exit 1
+              fi
+
               echo "Downloading Xray from $XRAY_ZIP"
               curl -fsSL "$XRAY_ZIP" -o xray.zip
               unzip -q xray.zip
