@@ -63,27 +63,25 @@ jobs:
 
           # Override keygen helpers (append; last definition wins)
           cat >> /workspace/xray/setup-xray-vless-ss.sh <<'EOS'
+          generate_reality_keys(){
+            tmp=$(mktemp)
+            openssl genpkey -algorithm X25519 -out "$tmp" >/dev/null 2>&1
+            priv=$(openssl pkey -in "$tmp" -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")
+            pub=$(openssl pkey -in "$tmp" -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")
+            rm -f "$tmp"
+            echo "Private key: $priv"
+            echo "Public key: $pub"
+          }
 
-generate_reality_keys(){
-  tmp=$(mktemp)
-  openssl genpkey -algorithm X25519 -out "$tmp" >/dev/null 2>&1
-  priv=$(openssl pkey -in "$tmp" -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")
-  pub=$(openssl pkey -in "$tmp" -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")
-  rm -f "$tmp"
-  echo "Private key: $priv"
-  echo "Public key: $pub"
-}
-
-derive_public_key_from_private(){
-  p="$1"
-  tmp=$(mktemp)
-  printf "-----BEGIN PRIVATE KEY-----\n%s\n-----END PRIVATE KEY-----\n" "$(printf "%s" "$p" | fold -w64)" > "$tmp"
-  pub=$(openssl pkey -in "$tmp" -inform PEM -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")
-  rm -f "$tmp"
-  printf "%s\n" "$pub"
-}
-
-EOS
+          derive_public_key_from_private(){
+            p="$1"
+            tmp=$(mktemp)
+            printf "-----BEGIN PRIVATE KEY-----\n%s\n-----END PRIVATE KEY-----\n" "$(printf "%s" "$p" | fold -w64)" > "$tmp"
+            pub=$(openssl pkey -in "$tmp" -inform PEM -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")
+            rm -f "$tmp"
+            printf "%s\n" "$pub"
+          }
+          EOS
 
           cd /workspace
 
