@@ -102,6 +102,22 @@ EOS
             -e "s|\$PORT_SS\$|8443|g" \
             -e "s|\$DOMAIN\$|example.com|g" \
             "$CONFIG"
+          # fallback for uuid / keys / password
+          if grep -q '\$ID\$\|\$PRIVATE_KEY\$\|\$PASSWORD\$' "$CONFIG"; then
+            UUID_FALLBACK=$(xray uuid)
+            TMPKP=$(mktemp)
+            openssl genpkey -algorithm X25519 -out "$TMPKP" >/dev/null 2>&1
+            PRIV_FALLBACK=$(openssl pkey -in "$TMPKP" -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")
+            PUB_FALLBACK=$(openssl pkey -in "$TMPKP" -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")
+            PASS_FALLBACK=$(openssl rand -base64 16)
+            rm -f "$TMPKP"
+            sed -i \
+              -e "s|\$ID\$|${UUID_FALLBACK}|g" \
+              -e "s|\$PRIVATE_KEY\$|${PRIV_FALLBACK}|g" \
+              -e "s|\$PASSWORD\$|${PASS_FALLBACK}|g" \
+              -e "s|\$PUBLIC_KEY\$|${PUB_FALLBACK}|g" \
+              "$CONFIG"
+          fi
           echo "------ rendered config (head) ------"
           sed -n '1,80p' "$CONFIG"
           echo "------ rendered config (tail) ------"
