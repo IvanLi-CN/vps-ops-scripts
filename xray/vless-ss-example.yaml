@@ -1,0 +1,58 @@
+log:
+  loglevel: info
+#  access: /var/log/xray/access.log
+  error: /var/log/xray/error.log
+
+inbounds:
+  - tag: vless-vision
+    listen: 0.0.0.0
+    port: $PORT_VLESS$
+    protocol: vless
+    settings:
+      clients:
+        - id: $ID$
+          flow: xtls-rprx-vision
+      decryption: none
+    streamSettings:
+      network: tcp
+      security: reality
+      realitySettings:
+        show: false
+        dest: $DOMAIN$:443
+        serverNames:
+          - $DOMAIN$
+        privateKey: $PRIVATE_KEY$
+        shortIds:
+          - ""
+    sniffing:
+      enabled: true
+      destOverride:
+        - http
+        - tls
+        - quic
+
+  - tag: ss2022-aes128
+    listen: 0.0.0.0
+    port: $PORT_SS$
+    protocol: shadowsocks
+    settings:
+      method: 2022-blake3-aes-128-gcm
+      password: $PASSWORD$
+      network: tcp,udp
+
+outbounds:
+  - tag: direct
+    protocol: freedom
+    settings: {}
+
+  - tag: block
+    protocol: blackhole
+    settings: {}
+
+routing:
+  rules:
+    - type: field
+      inboundTag:
+        - vless-vision
+        - ss2022-aes128
+      outboundTag: direct
