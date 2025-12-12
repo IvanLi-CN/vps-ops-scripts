@@ -36,9 +36,9 @@ jobs:
 
           if command -v apk >/dev/null 2>&1; then
             apk update >/dev/null
-            apk add --no-cache curl unzip tzdata ca-certificates openssl jq gcompat perl >/dev/null
+            apk add --no-cache curl unzip tzdata ca-certificates openssl jq gcompat perl python3 >/dev/null
           else
-            pacman -Sy --noconfirm curl unzip ca-certificates tzdata openssl jq perl >/dev/null
+            pacman -Sy --noconfirm curl unzip ca-certificates tzdata openssl jq perl python >/dev/null
           fi
 
           mkdir -p /tmp/xray && cd /tmp/xray
@@ -57,11 +57,32 @@ jobs:
           unzip -q xray.zip
           install -m 0755 xray /usr/local/bin/xray
 
-          # Monkeypatch script to generate x25519 keys via openssl (new Xray output lacks PublicKey)
-          perl -0777 -pi -e '
-            s@generate_reality_keys\(\)\s*\{.*?^}\n@generate_reality_keys(){\n  tmp=\\$(mktemp)\n  openssl genpkey -algorithm X25519 -out "\\$tmp" >/dev/null 2>&1\n  priv=\\$(openssl pkey -in "\\$tmp" -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\\\\n")\n  pub=\\$(openssl pkey -in "\\$tmp" -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\\\\n")\n  rm -f "\\$tmp"\n  echo "Private key: \\$priv"\n  echo "Public key: \\$pub"\n}\n@ms;
-            s@derive_public_key_from_private\(\)\s*\{.*?^}\n@derive_public_key_from_private(){\n  p="\\$1"\n  tmp=\\$(mktemp)\n  printf \\\'-----BEGIN PRIVATE KEY-----\\n%s\\n-----END PRIVATE KEY-----\\n\\\' "\\$(printf \\\\\\'%s\\\\\\' "\\$p" | fold -w64)" > "\\$tmp"\n  pub=\\$(openssl pkey -in "\\$tmp" -inform PEM -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\\\\n")\n  rm -f "\\$tmp"\n  printf \\\'%s\\n\\\' "\\$pub"\n}\n@ms;
-          ' /workspace/xray/setup-xray-vless-ss.sh
+          # Monkeypatch script via python to use openssl-generated x25519 keys
+          python3 - <<'PY'
+import re, pathlib
+p = pathlib.Path("/workspace/xray/setup-xray-vless-ss.sh")
+txt = p.read_text()
+txt = re.sub(r"generate_reality_keys\(\)\s*\{.*?\n\}", """generate_reality_keys(){
+  tmp=$(mktemp)
+  openssl genpkey -algorithm X25519 -out "$tmp" >/dev/null 2>&1
+  priv=$(openssl pkey -in "$tmp" -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\\n")
+  pub=$(openssl pkey -in "$tmp" -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\\n")
+  rm -f "$tmp"
+  echo "Private key: $priv"
+  echo "Public key: $pub"
+}
+""", txt, flags=re.S)
+txt = re.sub(r"derive_public_key_from_private\(\)\s*\{.*?\n\}", """derive_public_key_from_private(){
+  p="$1"
+  tmp=$(mktemp)
+  printf "-----BEGIN PRIVATE KEY-----\\n%s\\n-----END PRIVATE KEY-----\\n" "$(printf "%s" "$p" | fold -w64)" > "$tmp"
+  pub=$(openssl pkey -in "$tmp" -inform PEM -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\\n")
+  rm -f "$tmp"
+  printf "%s\\n" "$pub"
+}
+""", txt, flags=re.S)
+p.write_text(txt)
+PY
 
           cd /workspace
 
