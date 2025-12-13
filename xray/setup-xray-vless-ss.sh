@@ -351,6 +351,11 @@ install_openrc_service() {
 
   service_file="/etc/init.d/${service_name}"
 
+  asset_export_line=""
+  if [ -n "${XRAY_LOCATION_ASSET:-}" ]; then
+    asset_export_line="export XRAY_LOCATION_ASSET=\"${XRAY_LOCATION_ASSET}\""
+  fi
+
   cat > "${service_file}" <<EOF
 #!/sbin/openrc-run
 name="${service_name}"
@@ -361,6 +366,7 @@ command_args="run -c ${config_path} -format yaml"
 command_background="yes"
 pidfile="/run/${service_name}.pid"
 rc_ulimit="-n 1048576"
+${asset_export_line}
 
 depend() {
   need net
@@ -371,13 +377,44 @@ EOF
   chmod +x "${service_file}"
 
   rc-update add "${service_name}" default || true
-  # For first-time setup, avoid `restart || start` because OpenRC may return non-zero
-  # while a background service is still starting, which can lead to a second start attempt.
-  if rc-service "${service_name}" status >/dev/null 2>&1; then
-    rc-service "${service_name}" restart
-  else
-    rc-service "${service_name}" start
+
+  action="start"
+  status_out="$(rc-service "${service_name}" status 2>&1 || true)"
+  if printf "%s" "${status_out}" | grep -q "started"; then
+    action="restart"
   fi
+
+  tmpout="$(mktemp)"
+  if rc-service "${service_name}" "${action}" >"${tmpout}" 2>&1; then
+    cat "${tmpout}"
+    rm -f "${tmpout}"
+  else
+    rc="$?"
+    out="$(cat "${tmpout}")"
+    cat "${tmpout}"
+    rm -f "${tmpout}"
+
+    # OpenRC can report a transient "already starting" state (especially in containers or
+    # during runlevel transitions). Treat it as retryable and wait for the service to settle.
+    if printf "%s" "${out}" | grep -qi "already starting"; then
+      echo "Service '${service_name}' is still starting; waiting..."
+      for i in $(seq 1 30); do
+        status_out="$(rc-service "${service_name}" status 2>&1 || true)"
+        echo "${status_out}"
+        if printf "%s" "${status_out}" | grep -q "started"; then
+          rc=0
+          break
+        fi
+        sleep 1
+      done
+    fi
+
+    if [ "${rc}" -ne 0 ]; then
+      echo "OpenRC service '${service_name}' failed to ${action}."
+      return 1
+    fi
+  fi
+
   rc-service "${service_name}" status || true
 }
 
