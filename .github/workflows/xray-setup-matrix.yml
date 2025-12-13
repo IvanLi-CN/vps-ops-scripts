@@ -214,26 +214,6 @@ jobs:
             exit 1
           fi
 
-      - name: Install Xray (binary + geo assets) in Alpine OpenRC container
-        run: |
-          set -e
-          docker exec alpine-openrc sh -lc '
-            set -e
-            mkdir -p /tmp/xray && cd /tmp/xray
-            release_json=$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest)
-            XRAY_ZIP=$(printf "%s" "$release_json" | jq -r ".assets[] | select(.name==\"Xray-linux-musl-64.zip\") | .browser_download_url" | head -n1)
-            if [ -z "$XRAY_ZIP" ]; then
-              XRAY_ZIP=$(printf "%s" "$release_json" | jq -r ".assets[] | select(.name==\"Xray-linux-64.zip\") | .browser_download_url" | head -n1)
-            fi
-            test -n "$XRAY_ZIP"
-            echo "Downloading Xray from $XRAY_ZIP"
-            curl -fsSL "$XRAY_ZIP" -o xray.zip
-            unzip -q xray.zip
-            install -m 0755 xray /usr/local/bin/xray
-            install -d /usr/local/share/xray
-            install -m 0644 geoip.dat geosite.dat /usr/local/share/xray/
-          '
-
       - name: Run setup script and assert OpenRC service (Alpine)
         run: |
           set -e
@@ -241,6 +221,7 @@ jobs:
             set -e
             export XRAY_LOCATION_ASSET=/usr/local/share/xray
             printf "xray-ci\nexample.com\n14443\n18443\n" | /bin/sh /workspace/xray/setup-xray-vless-ss.sh
+            command -v xray
             test -x /etc/init.d/xray-ci
             rc-service xray-ci status | grep -q "started"
           '
