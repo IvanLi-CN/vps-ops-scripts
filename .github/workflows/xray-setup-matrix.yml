@@ -22,7 +22,7 @@ jobs:
             image: archlinux:latest
             asset_pattern: Xray-linux-64.zip
           - name: alpine
-            image: alpine:3.19
+            image: alpine:3.20
             asset_pattern: Xray-linux-musl-64.zip
 
     steps:
@@ -180,7 +180,7 @@ jobs:
         run: |
           set -e
           cat > /tmp/Dockerfile.alpine-openrc <<'EOF'
-          FROM alpine:3.19
+          FROM alpine:3.20
           RUN apk add --no-cache \
                 openrc mdevd-openrc \
                 curl unzip jq ca-certificates openssl tzdata gcompat \
