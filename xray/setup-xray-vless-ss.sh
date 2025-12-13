@@ -71,15 +71,72 @@ install_xray() {
       fi
       ;;
     apk)
-      echo "Installing xray on Alpine Linux via official installer..."
-      apk update
-      apk add --no-cache bash curl wget ca-certificates
-      # Alpine-specific installer (OpenRC-friendly)
-      if wget -qO- https://github.com/XTLS/alpinelinux-install-xray/raw/main/install-release.sh | bash -s -- install; then
-        :
-      else
-        echo "alpinelinux-install-xray failed; trying generic Xray-install script..."
-        curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh | bash -s -- install
+      echo "Installing xray on Alpine Linux..."
+      # Keep the installation self-contained (no external installer scripts),
+      # because upstream repo layouts can change.
+      apk add --no-cache curl unzip ca-certificates openssl >/dev/null
+
+      machine=""
+      case "$(uname -m)" in
+        i386|i686) machine="32" ;;
+        amd64|x86_64) machine="64" ;;
+        armv5tel) machine="arm32-v5" ;;
+        armv6l) machine="arm32-v6" ;;
+        armv7|armv7l) machine="arm32-v7a" ;;
+        armv8|aarch64) machine="arm64-v8a" ;;
+        mips) machine="mips32" ;;
+        mipsle) machine="mips32le" ;;
+        mips64) machine="mips64" ;;
+        mips64le) machine="mips64le" ;;
+        ppc64) machine="ppc64" ;;
+        ppc64le) machine="ppc64le" ;;
+        riscv64) machine="riscv64" ;;
+        s390x) machine="s390x" ;;
+      esac
+      if [ -z "${machine}" ]; then
+        echo "Unsupported architecture: $(uname -m)"
+        exit 1
+      fi
+
+      tmpdir="$(mktemp -d)"
+      zip_file="${tmpdir}/Xray-linux-${machine}.zip"
+      dgst_file="${zip_file}.dgst"
+      extract_dir="${tmpdir}/extract"
+      download_link="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${machine}.zip"
+
+      echo "Downloading Xray from ${download_link}"
+      curl -fsSL -H 'Cache-Control: no-cache' -o "${zip_file}" "${download_link}"
+      curl -fsSL -H 'Cache-Control: no-cache' -o "${dgst_file}" "${download_link}.dgst"
+
+      checksum="$(awk -F '= ' '/256=/ {print $2}' "${dgst_file}" | head -n1)"
+      localsum="$(sha256sum "${zip_file}" | awk '{print $1}')"
+      if [ -z "${checksum}" ] || [ "${checksum}" != "${localsum}" ]; then
+        echo "SHA256 verification failed for downloaded Xray zip."
+        rm -rf "${tmpdir}"
+        exit 1
+      fi
+
+      mkdir -p "${extract_dir}"
+      unzip -q "${zip_file}" -d "${extract_dir}"
+      install -m 0755 "${extract_dir}/xray" /usr/local/bin/xray
+      install -d /usr/local/share/xray
+      if [ -f "${extract_dir}/geoip.dat" ]; then
+        install -m 0644 "${extract_dir}/geoip.dat" /usr/local/share/xray/geoip.dat
+      fi
+      if [ -f "${extract_dir}/geosite.dat" ]; then
+        install -m 0644 "${extract_dir}/geosite.dat" /usr/local/share/xray/geosite.dat
+      fi
+      rm -rf "${tmpdir}"
+
+      # Some upstream builds may require glibc compatibility on musl systems.
+      if ! xray version >/dev/null 2>&1; then
+        echo "xray executable failed to run; trying to install gcompat..."
+        apk add --no-cache gcompat >/dev/null 2>&1 || true
+        xray version >/dev/null 2>&1 || {
+          echo "xray was installed, but it cannot run on this system."
+          echo "Try: apk add gcompat"
+          exit 1
+        }
       fi
       ;;
     *)
