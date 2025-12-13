@@ -66,6 +66,117 @@ detect_pkg_manager() {
   fi
 }
 
+extract_existing_config_values() {
+  config_path="$1"
+
+  EXIST_DOMAIN=""
+  EXIST_PORT_VLESS=""
+  EXIST_PORT_SS=""
+  EXIST_UUID=""
+  EXIST_PRIVATE_KEY=""
+  EXIST_SS_PASSWORD=""
+
+  [ -f "${config_path}" ] || return 0
+
+  # domain is embedded in: dest: <domain>:443
+  EXIST_DOMAIN="$(awk '
+    $0 ~ /^[[:space:]]*dest:[[:space:]]*/ {
+      sub(/^[[:space:]]*dest:[[:space:]]*/, "", $0)
+      sub(/:[0-9]+[[:space:]]*$/, "", $0)
+      print $0
+      exit
+    }
+  ' "${config_path}")"
+
+  EXIST_PORT_VLESS="$(awk '
+    $0 ~ /^[[:space:]]*- tag:[[:space:]]*vless-vision[[:space:]]*$/ {in_section=1; next}
+    in_section && $0 ~ /^[[:space:]]*- tag:/ {in_section=0}
+    in_section && $0 ~ /^[[:space:]]*port:[[:space:]]*/ {
+      sub(/^[[:space:]]*port:[[:space:]]*/, "", $0)
+      print $0
+      exit
+    }
+  ' "${config_path}")"
+
+  EXIST_PORT_SS="$(awk '
+    $0 ~ /^[[:space:]]*- tag:[[:space:]]*ss2022-aes128[[:space:]]*$/ {in_section=1; next}
+    in_section && $0 ~ /^[[:space:]]*- tag:/ {in_section=0}
+    in_section && $0 ~ /^[[:space:]]*port:[[:space:]]*/ {
+      sub(/^[[:space:]]*port:[[:space:]]*/, "", $0)
+      print $0
+      exit
+    }
+  ' "${config_path}")"
+
+  EXIST_UUID="$(awk '
+    $0 ~ /^[[:space:]]*- tag:[[:space:]]*vless-vision[[:space:]]*$/ {in_section=1; next}
+    in_section && $0 ~ /^[[:space:]]*- tag:/ {in_section=0}
+    in_section && $0 ~ /^[[:space:]]*- id:[[:space:]]*/ {
+      sub(/^[[:space:]]*- id:[[:space:]]*/, "", $0)
+      print $0
+      exit
+    }
+  ' "${config_path}")"
+
+  EXIST_PRIVATE_KEY="$(awk '
+    $0 ~ /^[[:space:]]*- tag:[[:space:]]*vless-vision[[:space:]]*$/ {in_section=1; next}
+    in_section && $0 ~ /^[[:space:]]*- tag:/ {in_section=0}
+    in_section && $0 ~ /^[[:space:]]*privateKey:[[:space:]]*/ {
+      sub(/^[[:space:]]*privateKey:[[:space:]]*/, "", $0)
+      print $0
+      exit
+    }
+  ' "${config_path}")"
+
+  EXIST_SS_PASSWORD="$(awk '
+    $0 ~ /^[[:space:]]*- tag:[[:space:]]*ss2022-aes128[[:space:]]*$/ {in_section=1; next}
+    in_section && $0 ~ /^[[:space:]]*- tag:/ {in_section=0}
+    in_section && $0 ~ /^[[:space:]]*password:[[:space:]]*/ {
+      sub(/^[[:space:]]*password:[[:space:]]*/, "", $0)
+      gsub(/^'\''|'\''$/, "", $0)
+      print $0
+      exit
+    }
+  ' "${config_path}")"
+}
+
+detect_existing_service_name() {
+  config_path="$1"
+
+  # systemd
+  if [ -d /etc/systemd/system ]; then
+    for f in /etc/systemd/system/*.service; do
+      [ -f "${f}" ] || continue
+      if grep -q "run -c ${config_path}" "${f}" 2>/dev/null; then
+        basename "${f}" .service
+        return 0
+      fi
+    done
+  fi
+
+  # OpenRC
+  if [ -d /etc/init.d ]; then
+    for f in /etc/init.d/*; do
+      [ -f "${f}" ] || continue
+      if grep -q "run -c ${config_path}" "${f}" 2>/dev/null; then
+        basename "${f}"
+        return 0
+      fi
+    done
+  fi
+
+  return 1
+}
+
+extract_public_key_from_xray_x25519() {
+  x25519_output="$1"
+  printf '%s\n' "${x25519_output}" | awk '
+    /^[Pp]ublic[[:space:]]+[Kk]ey:/ {print $3; exit}
+    /^[Pp]ublic[Kk]ey:/ {print $2; exit}
+    /^[Pp]assword:/ {print $2; exit}
+  '
+}
+
 install_xray() {
   if command -v xray >/dev/null 2>&1; then
     echo "xray already installed at $(command -v xray)"
@@ -221,35 +332,70 @@ create_config_from_template() {
   mkdir -p "${config_dir}"
   mkdir -p /var/log/xray
 
+  config_path="${config_dir}/${CONFIG_FILE_NAME}"
+  if [ -f "${config_path}" ]; then
+    echo "Detected existing config at: ${config_path}"
+    echo "Will use existing values as defaults, and reuse existing secrets when possible."
+    extract_existing_config_values "${config_path}"
+  fi
+
   echo "=== Basic parameters ==="
   domain=
   port_vless=
   port_ss=
-  prompt domain "Enter REALITY domain (SNI / dest host)" ""
-  prompt port_vless "Enter VLESS listen port" "443"
-  prompt port_ss "Enter Shadowsocks 2022 listen port" "8443"
+  prompt domain "Enter REALITY domain (SNI / dest host)" "${EXIST_DOMAIN}"
+  prompt port_vless "Enter VLESS listen port" "${EXIST_PORT_VLESS:-443}"
+  prompt port_ss "Enter Shadowsocks 2022 listen port" "${EXIST_PORT_SS:-8443}"
 
   echo
   echo "=== Generating secrets using xray and system RNG ==="
 
-  echo "Generating UUID (VLESS client id)..."
-  uuid="$(generate_uuid)"
+  uuid=""
+  if [ -n "${EXIST_UUID}" ] && [ -z "${XRAY_REGEN_SECRETS:-}" ]; then
+    echo "Reusing existing UUID (VLESS client id)..."
+    uuid="${EXIST_UUID}"
+  else
+    echo "Generating UUID (VLESS client id)..."
+    uuid="$(generate_uuid)"
+  fi
 
-  echo "Generating Reality x25519 keypair..."
-  # capture both private and public key output
-  reality_output="$(generate_reality_keys)"
-  private_key="$(printf '%s\n' "${reality_output}" | awk '/Private key:/ {print $3}')"
-  public_key="$(printf '%s\n' "${reality_output}" | awk '/Public key:/ {print $3}')"
+  private_key=""
+  public_key=""
+  if [ -n "${EXIST_PRIVATE_KEY}" ] && [ -z "${XRAY_REGEN_SECRETS:-}" ]; then
+    echo "Reusing existing Reality x25519 private key..."
+    private_key="${EXIST_PRIVATE_KEY}"
+    x25519_out="$(xray x25519 -i "${private_key}" 2>/dev/null || true)"
+    public_key="$(extract_public_key_from_xray_x25519 "${x25519_out}")"
+    if [ -z "${public_key}" ]; then
+      x25519_out="$(xray x25519 --std-encoding -i "${private_key}" 2>/dev/null || true)"
+      public_key="$(extract_public_key_from_xray_x25519 "${x25519_out}")"
+    fi
+    if [ -z "${public_key}" ]; then
+      echo "Failed to derive public key from existing private key."
+      echo "Set XRAY_REGEN_SECRETS=1 to regenerate the Reality keypair."
+      exit 1
+    fi
+  else
+    echo "Generating Reality x25519 keypair..."
+    # capture both private and public key output
+    reality_output="$(generate_reality_keys)"
+    private_key="$(printf '%s\n' "${reality_output}" | awk '/Private key:/ {print $3}')"
+    public_key="$(printf '%s\n' "${reality_output}" | awk '/Public key:/ {print $3}')"
+  fi
 
   if [ -z "${private_key}" ] || [ -z "${public_key}" ]; then
     echo "Failed to parse x25519 keys from xray output."
     exit 1
   fi
 
-  echo "Generating Shadowsocks 2022 password..."
-  ss_password="$(generate_ss2022_password)"
-
-  config_path="${config_dir}/${CONFIG_FILE_NAME}"
+  ss_password=""
+  if [ -n "${EXIST_SS_PASSWORD}" ] && [ -z "${XRAY_REGEN_SECRETS:-}" ]; then
+    echo "Reusing existing Shadowsocks 2022 password..."
+    ss_password="${EXIST_SS_PASSWORD}"
+  else
+    echo "Generating Shadowsocks 2022 password..."
+    ss_password="$(generate_ss2022_password)"
+  fi
 
   cat <<'EOF' | sed \
     -e "s|\\\$PORT_VLESS\\\$|${port_vless}|g" \
@@ -561,7 +707,12 @@ main() {
   echo "=== Xray VLESS+Reality & SS2022 setup helper ==="
   echo
   echo "Config will be written to: ${CONFIG_DIR}/${CONFIG_FILE_NAME}"
-  prompt SERVICE_NAME "Service name (systemd/OpenRC)" "${SERVICE_NAME_DEFAULT}"
+  existing_service_name="$(detect_existing_service_name "${CONFIG_DIR}/${CONFIG_FILE_NAME}" 2>/dev/null || true)"
+  if [ -n "${existing_service_name}" ]; then
+    prompt SERVICE_NAME "Service name (systemd/OpenRC)" "${existing_service_name}"
+  else
+    prompt SERVICE_NAME "Service name (systemd/OpenRC)" "${SERVICE_NAME_DEFAULT}"
+  fi
 
   install_xray
 
