@@ -6,20 +6,41 @@ CONFIG_DIR="/usr/local/etc/xray"
 CONFIG_FILE_NAME="vless-ss-reality.yaml"
 SERVICE_NAME_DEFAULT="xray-vless-ss"
 
+read_prompt_value() {
+  _var_name="$1"
+  # First try stdin (works for interactive shells and CI where input is piped),
+  # then fall back to /dev/tty (works for `curl ... | sh` cases).
+  if IFS= read -r "${_var_name}"; then
+    return 0
+  fi
+  if [ -r /dev/tty ] && IFS= read -r "${_var_name}" < /dev/tty; then
+    return 0
+  fi
+  return 1
+}
+
 prompt() {
   _prompt_name="$1"
   _prompt_text="$2"
   _prompt_default="${3-}"
 
-  _prompt_value=
+  _prompt_value=""
   if [ -n "${_prompt_default}" ]; then
     printf '%s [%s]: ' "${_prompt_text}" "${_prompt_default}"
-    IFS= read -r _prompt_value || _prompt_value=""
+    if ! read_prompt_value _prompt_value; then
+      _prompt_value=""
+    fi
     [ -z "${_prompt_value}" ] && _prompt_value="${_prompt_default}"
   else
     while :; do
       printf '%s: ' "${_prompt_text}"
-      IFS= read -r _prompt_value || _prompt_value=""
+      if ! read_prompt_value _prompt_value; then
+        echo "No input available for prompt '${_prompt_text}'." >&2
+        echo "Tip: do not run the script via 'curl ... | sh'." >&2
+        echo "Instead, download to a file and run it, e.g.:" >&2
+        echo "  curl -fsSL <URL> -o /tmp/setup-xray.sh && sh /tmp/setup-xray.sh" >&2
+        exit 1
+      fi
       [ -n "${_prompt_value}" ] && break
       echo "Value is required, please try again."
     done
