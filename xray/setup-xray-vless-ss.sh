@@ -333,10 +333,10 @@ create_config_from_template() {
   mkdir -p /var/log/xray
 
   config_path="${config_dir}/${CONFIG_FILE_NAME}"
+  extract_existing_config_values "${config_path}"
   if [ -f "${config_path}" ]; then
     echo "Detected existing config at: ${config_path}"
     echo "Will use existing values as defaults, and reuse existing secrets when possible."
-    extract_existing_config_values "${config_path}"
   fi
 
   echo "=== Basic parameters ==="
