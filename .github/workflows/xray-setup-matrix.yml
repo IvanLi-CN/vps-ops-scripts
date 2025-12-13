@@ -22,7 +22,7 @@ jobs:
             image: archlinux:latest
             asset_pattern: Xray-linux-64.zip
           - name: alpine
-            image: alpine:3.19
+            image: alpine:3.20
             asset_pattern: Xray-linux-musl-64.zip
 
     steps:
@@ -73,34 +73,12 @@ jobs:
 
           CONFIG=/usr/local/etc/xray/vless-ss-reality.yaml
           test -f "$CONFIG"
-          # Fallback replace if placeholders somehow remain
-          sed -i \
-            -e "s|\$PORT_VLESS\$|443|g" \
-            -e "s|\$PORT_SS\$|8443|g" \
-            -e "s|\$DOMAIN\$|example.com|g" \
-            "$CONFIG"
-          # fallback for uuid / keys / password
-          if grep -q '\$ID\$\|\$PRIVATE_KEY\$\|\$PASSWORD\$' "$CONFIG"; then
-            UUID_FALLBACK=$(xray uuid)
-            TMPKP=$(mktemp)
-            openssl genpkey -algorithm X25519 -out "$TMPKP" >/dev/null 2>&1
-            PRIV_FALLBACK=$(openssl pkey -in "$TMPKP" -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")
-            PUB_FALLBACK=$(openssl pkey -in "$TMPKP" -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d "\n")
-            PASS_FALLBACK=$(openssl rand -base64 16)
-            rm -f "$TMPKP"
-            sed -i \
-              -e "s|\$ID\$|${UUID_FALLBACK}|g" \
-              -e "s|\$PRIVATE_KEY\$|${PRIV_FALLBACK}|g" \
-              -e "s|\$PASSWORD\$|${PASS_FALLBACK}|g" \
-              -e "s|\$PUBLIC_KEY\$|${PUB_FALLBACK}|g" \
-              "$CONFIG"
-          fi
           echo "------ rendered config (head) ------"
           sed -n '1,80p' "$CONFIG"
           echo "------ rendered config (tail) ------"
           tail -n 40 "$CONFIG"
           # ensure no unreplaced placeholders remain
-          if grep -q '\$PORT_VLESS\$\|\$PORT_SS\$\|\$DOMAIN\$\|\$ID\$\|\$PRIVATE_KEY\$\|\$PASSWORD\$' "$CONFIG"; then
+          if grep -Eq '\$PORT_VLESS\$|\$PORT_SS\$|\$DOMAIN\$|\$ID\$|\$PRIVATE_KEY\$|\$PASSWORD\$' "$CONFIG"; then
             echo "Placeholder substitution failed"; exit 1; fi
           xray run -test -c "$CONFIG" -format yaml
           EOSH
@@ -112,3 +90,143 @@ jobs:
             --name xray-ci-${{ matrix.name }} \
             ${{ matrix.image }} \
             /bin/sh /tmp/xray-ci.sh
+
+  xray-setup-arch-systemd:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Arch Linux systemd test image
+        run: |
+          set -e
+          cat > /tmp/Dockerfile.arch-systemd <<'EOF'
+          FROM archlinux:latest
+          RUN pacman -Syu --noconfirm --needed \
+                systemd systemd-sysvcompat \
+                curl unzip jq ca-certificates openssl perl python \
+              && yes | pacman -Scc
+          STOPSIGNAL SIGRTMIN+3
+          CMD ["/sbin/init"]
+          EOF
+          docker build -t arch-systemd-test -f /tmp/Dockerfile.arch-systemd /tmp
+
+      - name: Boot Arch Linux systemd container
+        run: |
+          set -e
+          docker run --privileged --cgroupns=host -d \
+            --name arch-sysd \
+            --tmpfs /run --tmpfs /tmp \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            -v "$PWD":/workspace \
+            --workdir /workspace \
+            arch-systemd-test
+
+          # Wait for systemd (running inside the container) to be ready.
+          for i in $(seq 1 40); do
+            state="$(docker exec arch-sysd systemctl is-system-running 2>/dev/null || true)"
+            if [ "$state" = "running" ] || [ "$state" = "degraded" ]; then
+              break
+            fi
+            sleep 1
+          done
+          state="$(docker exec arch-sysd systemctl is-system-running 2>/dev/null || true)"
+          echo "systemd state: $state"
+          if [ "$state" != "running" ] && [ "$state" != "degraded" ]; then
+            docker logs arch-sysd || true
+            exit 1
+          fi
+
+      - name: Install Xray (binary + geo assets) in Arch container
+        run: |
+          set -e
+          docker exec arch-sysd sh -lc '
+            set -e
+            mkdir -p /tmp/xray && cd /tmp/xray
+            release_json=$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest)
+            XRAY_ZIP=$(printf "%s" "$release_json" | jq -r ".assets[] | select(.name==\"Xray-linux-64.zip\") | .browser_download_url" | head -n1)
+            test -n "$XRAY_ZIP"
+            echo "Downloading Xray from $XRAY_ZIP"
+            curl -fsSL "$XRAY_ZIP" -o xray.zip
+            unzip -q xray.zip
+            install -m 0755 xray /usr/local/bin/xray
+            install -d /usr/local/share/xray
+            install -m 0644 geoip.dat geosite.dat /usr/local/share/xray/
+          '
+
+      - name: Run setup script and assert systemd service (Arch)
+        run: |
+          set -e
+          docker exec arch-sysd sh -lc '
+            set -e
+            export XRAY_LOCATION_ASSET=/usr/local/share/xray
+            printf "xray-ci\nexample.com\n14443\n18443\n" | /bin/sh /workspace/xray/setup-xray-vless-ss.sh
+            systemctl is-enabled xray-ci.service
+            systemctl is-active xray-ci.service
+          '
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f arch-sysd >/dev/null 2>&1 || true
+
+  xray-setup-alpine-openrc:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Alpine OpenRC init test image
+        run: |
+          set -e
+          cat > /tmp/Dockerfile.alpine-openrc <<'EOF'
+          FROM alpine:3.20
+          RUN apk add --no-cache \
+                openrc mdevd-openrc \
+                curl unzip jq ca-certificates openssl tzdata gcompat \
+            && sed -i '/getty/d' /etc/inittab
+          CMD ["/sbin/init"]
+          EOF
+          docker build -t alpine-openrc-test -f /tmp/Dockerfile.alpine-openrc /tmp
+
+      - name: Boot Alpine OpenRC container
+        run: |
+          set -e
+          docker run --privileged -d \
+            --name alpine-openrc \
+            --tmpfs /run --tmpfs /tmp \
+            -v "$PWD":/workspace \
+            --workdir /workspace \
+            alpine-openrc-test
+
+          # Wait for OpenRC to reach the default runlevel.
+          for i in $(seq 1 40); do
+            level="$(docker exec alpine-openrc sh -lc 'cat /run/openrc/softlevel 2>/dev/null || true' | tr -d '\r' || true)"
+            echo "softlevel: ${level}"
+            if [ "${level}" = "default" ]; then
+              break
+            fi
+            sleep 1
+          done
+          level="$(docker exec alpine-openrc sh -lc 'cat /run/openrc/softlevel 2>/dev/null || true' | tr -d '\r' || true)"
+          if [ "${level}" != "default" ]; then
+            docker logs alpine-openrc || true
+            exit 1
+          fi
+
+      - name: Run setup script and assert OpenRC service (Alpine)
+        run: |
+          set -e
+          docker exec alpine-openrc sh -lc '
+            set -e
+            export XRAY_LOCATION_ASSET=/usr/local/share/xray
+            printf "xray-ci\nexample.com\n14443\n18443\n" | /bin/sh /workspace/xray/setup-xray-vless-ss.sh
+            command -v xray
+            test -x /etc/init.d/xray-ci
+            rc-service xray-ci status | grep -q "started"
+          '
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f alpine-openrc >/dev/null 2>&1 || true
