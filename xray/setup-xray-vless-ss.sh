@@ -8,11 +8,23 @@ SERVICE_NAME_DEFAULT="xray-vless-ss"
 
 read_prompt_value() {
   _var_name="$1"
-  # First try stdin (works for interactive shells and CI where input is piped),
-  # then fall back to /dev/tty (works for `curl ... | sh` cases).
-  if IFS= read -r "${_var_name}"; then
-    return 0
+
+  # If the script is executed from a file, stdin can safely be used for prompts
+  # (e.g. CI piping answers via `printf ... | sh ./script.sh`).
+  #
+  # If the script is executed from stdin (e.g. `curl ... | sh`), stdin contains
+  # the script itself and must NOT be used for prompts. In that case, prefer
+  # /dev/tty and fail if it's unavailable.
+  if [ -f "${0}" ] || [ -f "./${0}" ]; then
+    if IFS= read -r "${_var_name}"; then
+      return 0
+    fi
+    if [ -r /dev/tty ] && IFS= read -r "${_var_name}" < /dev/tty; then
+      return 0
+    fi
+    return 1
   fi
+
   if [ -r /dev/tty ] && IFS= read -r "${_var_name}" < /dev/tty; then
     return 0
   fi
@@ -36,9 +48,10 @@ prompt() {
       printf '%s: ' "${_prompt_text}"
       if ! read_prompt_value _prompt_value; then
         echo "No input available for prompt '${_prompt_text}'." >&2
-        echo "Tip: do not run the script via 'curl ... | sh'." >&2
-        echo "Instead, download to a file and run it, e.g.:" >&2
-        echo "  curl -fsSL <URL> -o /tmp/setup-xray.sh && sh /tmp/setup-xray.sh" >&2
+        echo "Tip: run the script in an interactive shell (TTY) so it can read your input." >&2
+        echo "If you must run non-interactively, download to a file and pipe answers in, e.g.:" >&2
+        echo "  curl -fsSL <URL> -o /tmp/setup-xray.sh" >&2
+        echo "  printf \"<service>\\n<domain>\\n<vless_port>\\n<ss_port>\\n\" | sh /tmp/setup-xray.sh" >&2
         exit 1
       fi
       [ -n "${_prompt_value}" ] && break
@@ -64,6 +77,62 @@ detect_pkg_manager() {
   else
     echo "unknown"
   fi
+}
+
+is_ipv4() {
+  ip="$1"
+  printf "%s" "${ip}" | awk -F. '
+    NF != 4 { exit 1 }
+    {
+      for (i = 1; i <= 4; i++) {
+        if ($i !~ /^[0-9]+$/) exit 1
+        if ($i < 0 || $i > 255) exit 1
+      }
+      exit 0
+    }
+  '
+}
+
+detect_public_ipv4() {
+  # Best-effort: query multiple IP echo services, return the first valid IPv4.
+  if command -v curl >/dev/null 2>&1; then
+    for url in \
+      "https://api.ipify.org" \
+      "https://checkip.amazonaws.com" \
+      "https://ipv4.icanhazip.com" \
+      "https://ifconfig.me/ip" \
+      "https://ip.sb"; do
+      ip="$(curl -fsSL --connect-timeout 3 --max-time 5 "${url}" 2>/dev/null | tr -d '\r\n[:space:]' | sed -n '1p')"
+      if [ -n "${ip}" ] && is_ipv4 "${ip}"; then
+        printf "%s\n" "${ip}"
+        return 0
+      fi
+    done
+  elif command -v wget >/dev/null 2>&1; then
+    for url in \
+      "https://api.ipify.org" \
+      "https://checkip.amazonaws.com" \
+      "https://ipv4.icanhazip.com" \
+      "https://ifconfig.me/ip" \
+      "https://ip.sb"; do
+      ip="$(wget -qO- "${url}" 2>/dev/null | tr -d '\r\n[:space:]' | sed -n '1p')"
+      if [ -n "${ip}" ] && is_ipv4 "${ip}"; then
+        printf "%s\n" "${ip}"
+        return 0
+      fi
+    done
+  fi
+
+  return 1
+}
+
+get_server_addr() {
+  # Prefer explicit override (e.g. when the machine has no IPv4).
+  if [ -n "${XRAY_SERVER_ADDR:-}" ]; then
+    printf "%s\n" "${XRAY_SERVER_ADDR}"
+    return 0
+  fi
+  detect_public_ipv4
 }
 
 extract_existing_config_values() {
@@ -666,12 +735,13 @@ setup_service() {
 
 print_mihomo_snippet() {
   name="$1"
-  domain="$2"
-  port_vless="$3"
-  port_ss="$4"
-  uuid="$5"
-  public_key="$6"
-  ss_password="$7"
+  server_addr="$2"
+  sni_domain="$3"
+  port_vless="$4"
+  port_ss="$5"
+  uuid="$6"
+  public_key="$7"
+  ss_password="$8"
 
   cat <<EOF
 ---
@@ -679,21 +749,21 @@ print_mihomo_snippet() {
 proxies:
   - name: ${name}
     type: vless
-    server: ${domain}
+    server: ${server_addr}
     port: ${port_vless}
     uuid: ${uuid}
     network: tcp
     udp: true
     tls: true
     flow: xtls-rprx-vision
-    servername: ${domain}
+    servername: ${sni_domain}
     reality-opts:
       public-key: ${public_key}
       short-id: ""
     client-fingerprint: chrome
   - name: xray-ss2022
     type: ss
-    server: ${domain}
+    server: ${server_addr}
     port: ${port_ss}
     cipher: 2022-blake3-aes-128-gcm
     password: '${ss_password}'
@@ -724,7 +794,13 @@ main() {
   echo "Service '${SERVICE_NAME}' has been configured and started (if supported)."
   echo
   echo "=== Mihomo / Clash.Meta node snippet ==="
-  print_mihomo_snippet "xray-vless-reality" "${XRAY_DOMAIN}" "${XRAY_PORT_VLESS}" "${XRAY_PORT_SS}" "${XRAY_UUID}" "${XRAY_PUBLIC_KEY}" "${XRAY_SS_PASSWORD}"
+  server_addr="$(get_server_addr 2>/dev/null || true)"
+  if [ -z "${server_addr}" ]; then
+    server_addr="${XRAY_DOMAIN}"
+    echo "Warning: failed to detect public IPv4; using '${server_addr}' as server address."
+    echo "Tip: set XRAY_SERVER_ADDR=<your VPS IP/domain> to override."
+  fi
+  print_mihomo_snippet "xray-vless-reality" "${server_addr}" "${XRAY_DOMAIN}" "${XRAY_PORT_VLESS}" "${XRAY_PORT_SS}" "${XRAY_UUID}" "${XRAY_PUBLIC_KEY}" "${XRAY_SS_PASSWORD}"
 }
 
 main "$@"
