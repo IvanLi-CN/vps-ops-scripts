@@ -522,12 +522,14 @@ print_mihomo_snippet() {
   name="$1"
   domain="$2"
   port_vless="$3"
-  uuid="$4"
-  public_key="$5"
+  port_ss="$4"
+  uuid="$5"
+  public_key="$6"
+  ss_password="$7"
 
   cat <<EOF
 ---
-# mihomo / Clash.Meta compatible node snippet
+# mihomo / Clash.Meta compatible node snippets
 proxies:
   - name: ${name}
     type: vless
@@ -543,6 +545,13 @@ proxies:
       public-key: ${public_key}
       short-id: ""
     client-fingerprint: chrome
+  - name: xray-ss2022
+    type: ss
+    server: ${domain}
+    port: ${port_ss}
+    cipher: 2022-blake3-aes-128-gcm
+    password: '${ss_password}'
+    udp: true
 EOF
 }
 
@@ -564,7 +573,7 @@ main() {
   echo "Service '${SERVICE_NAME}' has been configured and started (if supported)."
   echo
   echo "=== Mihomo / Clash.Meta node snippet ==="
-  print_mihomo_snippet "xray-vless-reality" "${XRAY_DOMAIN}" "${XRAY_PORT_VLESS}" "${XRAY_UUID}" "${XRAY_PUBLIC_KEY}"
+  print_mihomo_snippet "xray-vless-reality" "${XRAY_DOMAIN}" "${XRAY_PORT_VLESS}" "${XRAY_PORT_SS}" "${XRAY_UUID}" "${XRAY_PUBLIC_KEY}" "${XRAY_SS_PASSWORD}"
 }
 
 main "$@"
