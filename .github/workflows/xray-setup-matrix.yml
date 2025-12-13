@@ -176,57 +176,76 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run setup script and assert OpenRC service (Alpine)
+      - name: Build Alpine OpenRC init test image
         run: |
           set -e
-          cat > /tmp/xray-openrc-ci.sh <<'EOSH'
+          cat > /tmp/Dockerfile.alpine-openrc <<'EOF'
+          FROM alpine:3.19
+          RUN apk add --no-cache \
+                openrc mdevd-openrc \
+                curl unzip jq ca-certificates openssl tzdata gcompat \
+            && sed -i '/getty/d' /etc/inittab
+          CMD ["/sbin/init"]
+          EOF
+          docker build -t alpine-openrc-test -f /tmp/Dockerfile.alpine-openrc /tmp
+
+      - name: Boot Alpine OpenRC container
+        run: |
           set -e
+          docker run --privileged -d \
+            --name alpine-openrc \
+            --tmpfs /run --tmpfs /tmp \
+            -v "$PWD":/workspace \
+            --workdir /workspace \
+            alpine-openrc-test
 
-          apk update >/dev/null
-          apk add --no-cache curl unzip jq ca-certificates openssl openrc tzdata gcompat >/dev/null
-
-          # OpenRC needs a softlevel file; in containers it is commonly missing.
-          mkdir -p /run/openrc
-          touch /run/openrc/softlevel
-
-          mkdir -p /tmp/xray && cd /tmp/xray
-          release_json=$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest)
-          XRAY_ZIP=$(printf "%s" "$release_json" | jq -r '.assets[] | select(.name=="Xray-linux-musl-64.zip") | .browser_download_url' | head -n1)
-          if [ -z "$XRAY_ZIP" ]; then
-            # fallback to glibc build when musl build is not published
-            XRAY_ZIP=$(printf "%s" "$release_json" | jq -r '.assets[] | select(.name | contains("Xray-linux-64.zip")) | .browser_download_url' | head -n1)
-          fi
-          if [ -z "$XRAY_ZIP" ]; then
-            echo "Cannot locate Xray binary download URL"; exit 1
-          fi
-
-          echo "Downloading Xray from $XRAY_ZIP"
-          curl -fsSL "$XRAY_ZIP" -o xray.zip
-          unzip -q xray.zip
-          install -m 0755 xray /usr/local/bin/xray
-          install -d /usr/local/share/xray
-          install -m 0644 geoip.dat geosite.dat /usr/local/share/xray/
-          export XRAY_LOCATION_ASSET=/usr/local/share/xray
-
-          cd /workspace
-          printf "xray-ci\nexample.com\n14443\n18443\n" | /bin/sh ./xray/setup-xray-vless-ss.sh
-
-          test -x /etc/init.d/xray-ci
-          # OpenRC can report a transient "already starting" state; wait until it's started.
-          for i in $(seq 1 20); do
-            status="$(rc-service xray-ci status 2>&1 || true)"
-            echo "$status"
-            if printf "%s" "$status" | grep -q "started"; then
+          # Wait for OpenRC to reach the default runlevel.
+          for i in $(seq 1 40); do
+            level="$(docker exec alpine-openrc sh -lc 'cat /run/openrc/softlevel 2>/dev/null || true' | tr -d '\r' || true)"
+            echo "softlevel: ${level}"
+            if [ "${level}" = "default" ]; then
               break
             fi
             sleep 1
           done
-          rc-service xray-ci status | grep -q "started"
-          EOSH
+          level="$(docker exec alpine-openrc sh -lc 'cat /run/openrc/softlevel 2>/dev/null || true' | tr -d '\r' || true)"
+          if [ "${level}" != "default" ]; then
+            docker logs alpine-openrc || true
+            exit 1
+          fi
 
-          docker run --rm -i \
-            -v "$PWD":/workspace \
-            -v /tmp/xray-openrc-ci.sh:/tmp/xray-openrc-ci.sh:ro \
-            --workdir /workspace \
-            alpine:3.19 \
-            /bin/sh /tmp/xray-openrc-ci.sh
+      - name: Install Xray (binary + geo assets) in Alpine OpenRC container
+        run: |
+          set -e
+          docker exec alpine-openrc sh -lc '
+            set -e
+            mkdir -p /tmp/xray && cd /tmp/xray
+            release_json=$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest)
+            XRAY_ZIP=$(printf "%s" "$release_json" | jq -r ".assets[] | select(.name==\"Xray-linux-musl-64.zip\") | .browser_download_url" | head -n1)
+            if [ -z "$XRAY_ZIP" ]; then
+              XRAY_ZIP=$(printf "%s" "$release_json" | jq -r ".assets[] | select(.name==\"Xray-linux-64.zip\") | .browser_download_url" | head -n1)
+            fi
+            test -n "$XRAY_ZIP"
+            echo "Downloading Xray from $XRAY_ZIP"
+            curl -fsSL "$XRAY_ZIP" -o xray.zip
+            unzip -q xray.zip
+            install -m 0755 xray /usr/local/bin/xray
+            install -d /usr/local/share/xray
+            install -m 0644 geoip.dat geosite.dat /usr/local/share/xray/
+          '
+
+      - name: Run setup script and assert OpenRC service (Alpine)
+        run: |
+          set -e
+          docker exec alpine-openrc sh -lc '
+            set -e
+            export XRAY_LOCATION_ASSET=/usr/local/share/xray
+            printf "xray-ci\nexample.com\n14443\n18443\n" | /bin/sh /workspace/xray/setup-xray-vless-ss.sh
+            test -x /etc/init.d/xray-ci
+            rc-service xray-ci status | grep -q "started"
+          '
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f alpine-openrc >/dev/null 2>&1 || true
