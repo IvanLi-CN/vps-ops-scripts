@@ -212,7 +212,16 @@ jobs:
           printf "xray-ci\nexample.com\n14443\n18443\n" | /bin/sh ./xray/setup-xray-vless-ss.sh
 
           test -x /etc/init.d/xray-ci
-          rc-service xray-ci status
+          # OpenRC can report a transient "already starting" state; wait until it's started.
+          for i in $(seq 1 20); do
+            status="$(rc-service xray-ci status 2>&1 || true)"
+            echo "$status"
+            if printf "%s" "$status" | grep -q "started"; then
+              break
+            fi
+            sleep 1
+          done
+          rc-service xray-ci status | grep -q "started"
           EOSH
 
           docker run --rm -i \
