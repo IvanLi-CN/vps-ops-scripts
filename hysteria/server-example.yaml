@@ -1,0 +1,28 @@
+listen: :$PORT$
+
+# Choose one of: `acme` or `tls` (cannot have both).
+acme:
+  domains:
+    - $DOMAIN$
+  email: $ACME_EMAIL$
+
+#tls:
+#  cert: $CERT$
+#  key: $KEY$
+
+auth:
+  type: password
+  password: $AUTH_PASSWORD$
+
+# Optional: obfuscation (Salamander). Must match client.
+#obfs:
+#  type: salamander
+#  salamander:
+#    password: $OBFS_PASSWORD$
+
+# Optional: masquerade as reverse proxy (HTTP/3).
+#masquerade:
+#  type: proxy
+#  proxy:
+#    url: $MASQ_URL$
+#    rewriteHost: true

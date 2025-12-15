@@ -1,0 +1,12 @@
+server: $SERVER_ADDR$:$PORT$
+auth: $AUTH_PASSWORD$
+
+tls:
+  sni: $DOMAIN$
+  insecure: $INSECURE$
+
+# Optional: obfuscation (Salamander). Must match server.
+#obfs:
+#  type: salamander
+#  salamander:
+#    password: $OBFS_PASSWORD$

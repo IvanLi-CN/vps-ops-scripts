@@ -1,0 +1,202 @@
+name: Test Hysteria Setup Script
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "hysteria/**"
+      - ".github/workflows/hysteria-setup-matrix.yml"
+  pull_request:
+    paths:
+      - "hysteria/**"
+      - ".github/workflows/hysteria-setup-matrix.yml"
+
+jobs:
+  hysteria-setup:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: archlinux
+            image: archlinux:latest
+          - name: alpine
+            image: alpine:3.20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run setup-hysteria-server.sh in ${{ matrix.image }}
+        run: |
+          cat > /tmp/hysteria-ci.sh <<'EOSH'
+          set -e
+
+          # Minimal dependencies for generating a self-signed cert for testing.
+          if command -v apk >/dev/null 2>&1; then
+            apk update >/dev/null
+            apk add --no-cache openssl >/dev/null
+          else
+            pacman -Sy --noconfirm openssl >/dev/null
+          fi
+
+          openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout /tmp/hysteria.key -out /tmp/hysteria.crt \
+            -subj "/CN=example.com" -days 1 >/dev/null 2>&1
+
+          cd /workspace
+
+          # Feed answers to the interactive prompts:
+          # 1) service name (empty to accept default)
+          # 2) domain
+          # 3) listen port
+          # 4) TLS mode (acme|tls)
+          # 5) TLS cert path
+          # 6) TLS key path
+          # 7) obfs? (empty to accept default no)
+          # 8) masquerade? (empty to accept default no)
+          set -x
+          printf "\nexample.com\n14443\ntls\n/tmp/hysteria.crt\n/tmp/hysteria.key\n\n\n" | /bin/sh ./hysteria/setup-hysteria-server.sh
+
+          CONFIG=/usr/local/etc/hysteria/server.yaml
+          test -f "$CONFIG"
+          echo "------ rendered config ------"
+          cat "$CONFIG"
+          hysteria version
+          EOSH
+
+          docker run --rm -i \
+            -v "$PWD":/workspace \
+            -v /tmp/hysteria-ci.sh:/tmp/hysteria-ci.sh:ro \
+            --workdir /workspace \
+            --name hysteria-ci-${{ matrix.name }} \
+            ${{ matrix.image }} \
+            /bin/sh /tmp/hysteria-ci.sh
+
+  hysteria-setup-arch-systemd:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Arch Linux systemd test image
+        run: |
+          set -e
+          cat > /tmp/Dockerfile.arch-systemd <<'EOF'
+          FROM archlinux:latest
+          RUN pacman -Syu --noconfirm --needed \
+                systemd systemd-sysvcompat \
+                ca-certificates curl openssl \
+              && yes | pacman -Scc
+          STOPSIGNAL SIGRTMIN+3
+          CMD ["/sbin/init"]
+          EOF
+          docker build -t arch-systemd-hysteria-test -f /tmp/Dockerfile.arch-systemd /tmp
+
+      - name: Boot Arch Linux systemd container
+        run: |
+          set -e
+          docker run --privileged --cgroupns=host -d \
+            --name arch-sysd-hysteria \
+            --tmpfs /run --tmpfs /tmp \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            -v "$PWD":/workspace \
+            --workdir /workspace \
+            arch-systemd-hysteria-test
+
+          for i in $(seq 1 40); do
+            state="$(docker exec arch-sysd-hysteria systemctl is-system-running 2>/dev/null || true)"
+            if [ "$state" = "running" ] || [ "$state" = "degraded" ]; then
+              break
+            fi
+            sleep 1
+          done
+
+          state="$(docker exec arch-sysd-hysteria systemctl is-system-running 2>/dev/null || true)"
+          echo "systemd state: $state"
+          if [ "$state" != "running" ] && [ "$state" != "degraded" ]; then
+            docker logs arch-sysd-hysteria || true
+            exit 1
+          fi
+
+      - name: Run setup script and assert systemd service (Arch)
+        run: |
+          set -e
+          docker exec arch-sysd-hysteria sh -lc '
+            set -e
+            openssl req -x509 -newkey rsa:2048 -nodes \
+              -keyout /tmp/hysteria.key -out /tmp/hysteria.crt \
+              -subj "/CN=example.com" -days 1 >/dev/null 2>&1
+
+            printf "hysteria-ci\nexample.com\n14443\ntls\n/tmp/hysteria.crt\n/tmp/hysteria.key\nno\nno\n" | /bin/sh /workspace/hysteria/setup-hysteria-server.sh
+            systemctl is-enabled hysteria-ci.service
+            systemctl is-active hysteria-ci.service
+          '
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f arch-sysd-hysteria >/dev/null 2>&1 || true
+
+  hysteria-setup-alpine-openrc:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Alpine OpenRC init test image
+        run: |
+          set -e
+          cat > /tmp/Dockerfile.alpine-openrc <<'EOF'
+          FROM alpine:3.20
+          RUN apk add --no-cache \
+                openrc mdevd-openrc \
+                ca-certificates curl openssl \
+            && sed -i '/getty/d' /etc/inittab
+          CMD ["/sbin/init"]
+          EOF
+          docker build -t alpine-openrc-hysteria-test -f /tmp/Dockerfile.alpine-openrc /tmp
+
+      - name: Boot Alpine OpenRC container
+        run: |
+          set -e
+          docker run --privileged -d \
+            --name alpine-openrc-hysteria \
+            --tmpfs /run --tmpfs /tmp \
+            -v "$PWD":/workspace \
+            --workdir /workspace \
+            alpine-openrc-hysteria-test
+
+          for i in $(seq 1 40); do
+            level="$(docker exec alpine-openrc-hysteria sh -lc 'cat /run/openrc/softlevel 2>/dev/null || true' | tr -d '\r' || true)"
+            echo "softlevel: ${level}"
+            if [ "${level}" = "default" ]; then
+              break
+            fi
+            sleep 1
+          done
+          level="$(docker exec alpine-openrc-hysteria sh -lc 'cat /run/openrc/softlevel 2>/dev/null || true' | tr -d '\r' || true)"
+          if [ "${level}" != "default" ]; then
+            docker logs alpine-openrc-hysteria || true
+            exit 1
+          fi
+
+      - name: Run setup script and assert OpenRC service (Alpine)
+        run: |
+          set -e
+          docker exec alpine-openrc-hysteria sh -lc '
+            set -e
+            openssl req -x509 -newkey rsa:2048 -nodes \
+              -keyout /tmp/hysteria.key -out /tmp/hysteria.crt \
+              -subj "/CN=example.com" -days 1 >/dev/null 2>&1
+
+            printf "hysteria-ci\nexample.com\n14443\ntls\n/tmp/hysteria.crt\n/tmp/hysteria.key\nno\nno\n" | /bin/sh /workspace/hysteria/setup-hysteria-server.sh
+            command -v hysteria
+            test -x /etc/init.d/hysteria-ci
+            rc-service hysteria-ci status | grep -q "started"
+          '
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f alpine-openrc-hysteria >/dev/null 2>&1 || true
