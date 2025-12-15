@@ -747,6 +747,39 @@ print_share_uri() {
   printf "%s\n" "${uri}"
 }
 
+print_mihomo_snippet() {
+  name="$1"
+  server_addr="$2"
+  port="$3"
+  domain="$4"
+  auth_password="$5"
+  obfs_enabled="$6"
+  obfs_password="$7"
+
+  cat <<EOF
+---
+# mihomo / Clash.Meta compatible node snippet
+proxies:
+  - name: ${name}
+    type: hysteria2
+    server: ${server_addr}
+    port: ${port}
+    password: ${auth_password}
+    sni: ${domain}
+    skip-cert-verify: false
+    alpn:
+      - h3
+    udp: true
+EOF
+
+  if [ "${obfs_enabled}" = "yes" ]; then
+    cat <<EOF
+    obfs: salamander
+    obfs-password: ${obfs_password}
+EOF
+  fi
+}
+
 main() {
   ensure_root
 
@@ -779,6 +812,9 @@ main() {
   echo
   echo "# share URI"
   print_share_uri "${server_addr}" "${HYSTERIA_PORT}" "${HYSTERIA_DOMAIN}" "${HYSTERIA_AUTH_PASSWORD}" "${HYSTERIA_OBFS_ENABLED}" "${HYSTERIA_OBFS_PASSWORD}"
+  echo
+  echo "=== Mihomo / Clash.Meta node snippet ==="
+  print_mihomo_snippet "hysteria2" "${server_addr}" "${HYSTERIA_PORT}" "${HYSTERIA_DOMAIN}" "${HYSTERIA_AUTH_PASSWORD}" "${HYSTERIA_OBFS_ENABLED}" "${HYSTERIA_OBFS_PASSWORD}"
 
   echo
   echo "Reminder: open UDP port ${HYSTERIA_PORT} in your firewall / security group."
