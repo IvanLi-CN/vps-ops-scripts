@@ -6,6 +6,179 @@ CONFIG_DIR="/usr/local/etc/xray"
 CONFIG_FILE_NAME="vless-ss-reality.yaml"
 SERVICE_NAME_DEFAULT="xray-vless-ss"
 
+normalize_systemd_unit_name() {
+  case "$1" in
+    *.service) printf "%s\n" "$1" ;;
+    *) printf "%s.service\n" "$1" ;;
+  esac
+}
+
+strip_wrapping_quotes() {
+  s="$1"
+  case "${s}" in
+    \"*\") s="${s#\"}"; s="${s%\"}" ;;
+    \'*\') s="${s#\'}"; s="${s%\'}" ;;
+  esac
+  printf "%s\n" "${s}"
+}
+
+infer_config_format_from_path() {
+  case "$1" in
+    *.yaml|*.yml) echo "yaml" ;;
+    *.json) echo "json" ;;
+    *) echo "yaml" ;;
+  esac
+}
+
+extract_xray_config_path_from_cmdline() {
+  cmd="$1"
+
+  # Word-splitting is OK here because systemd/OpenRC ExecStart/args normally do not contain spaces in paths.
+  # We still strip wrapping quotes for robustness.
+  set -- ${cmd}
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -c|-config|--config)
+        shift
+        [ "$#" -gt 0 ] || return 0
+        strip_wrapping_quotes "$1"
+        return 0
+        ;;
+      -c=*)
+        printf "%s\n" "${1#-c=}"
+        return 0
+        ;;
+      -config=*)
+        printf "%s\n" "${1#-config=}"
+        return 0
+        ;;
+      --config=*)
+        printf "%s\n" "${1#--config=}"
+        return 0
+        ;;
+      -confdir|--confdir)
+        shift
+        [ "$#" -gt 0 ] || return 0
+        dir="$(strip_wrapping_quotes "$1")"
+        printf "%s/%s\n" "${dir%/}" "${CONFIG_FILE_NAME}"
+        return 0
+        ;;
+      -confdir=*)
+        dir="${1#-confdir=}"
+        printf "%s/%s\n" "${dir%/}" "${CONFIG_FILE_NAME}"
+        return 0
+        ;;
+      --confdir=*)
+        dir="${1#--confdir=}"
+        printf "%s/%s\n" "${dir%/}" "${CONFIG_FILE_NAME}"
+        return 0
+        ;;
+    esac
+    shift
+  done
+
+  return 0
+}
+
+extract_xray_config_format_from_cmdline() {
+  cmd="$1"
+
+  set -- ${cmd}
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -format|--format)
+        shift
+        [ "$#" -gt 0 ] || return 0
+        strip_wrapping_quotes "$1"
+        return 0
+        ;;
+      -format=*)
+        printf "%s\n" "${1#-format=}"
+        return 0
+        ;;
+      --format=*)
+        printf "%s\n" "${1#--format=}"
+        return 0
+        ;;
+    esac
+    shift
+  done
+
+  return 0
+}
+
+detect_systemd_execstart() {
+  service_name="$1"
+  unit="$(normalize_systemd_unit_name "${service_name}")"
+
+  systemctl cat "${unit}" 2>/dev/null | awk '
+    BEGIN { exec="" }
+    /^[[:space:]]*ExecStart=/ {
+      line=$0
+      sub(/^[[:space:]]*ExecStart=/, "", line)
+      if (line == "") { exec=""; next }
+      exec=line
+    }
+    END { if (exec != "") print exec }
+  '
+}
+
+detect_openrc_command_args() {
+  service_name="$1"
+  service_file="/etc/init.d/${service_name}"
+
+  [ -f "${service_file}" ] || return 0
+
+  # Prefer `command_args="..."` then `command_args='...'`
+  awk -F= '
+    $1 ~ /^[[:space:]]*command_args[[:space:]]*$/ {
+      val=$2
+      sub(/^[[:space:]]*/, "", val)
+      sub(/[[:space:]]*$/, "", val)
+      gsub(/^'\''|'\''$/, "", val)
+      gsub(/^"|"$/, "", val)
+      print val
+      exit
+    }
+  ' "${service_file}"
+}
+
+detect_existing_service_execstart() {
+  service_name="$1"
+  init="$(detect_init_system)"
+
+  case "${init}" in
+    systemd) detect_systemd_execstart "${service_name}" ;;
+    openrc) detect_openrc_command_args "${service_name}" ;;
+    *) return 0 ;;
+  esac
+}
+
+detect_existing_service_config_path() {
+  service_name="$1"
+
+  execstart="$(detect_existing_service_execstart "${service_name}")"
+  [ -n "${execstart}" ] || return 0
+
+  extract_xray_config_path_from_cmdline "${execstart}"
+}
+
+detect_existing_service_config_format() {
+  service_name="$1"
+  config_path="$2"
+
+  execstart="$(detect_existing_service_execstart "${service_name}")"
+  if [ -n "${execstart}" ]; then
+    fmt="$(extract_xray_config_format_from_cmdline "${execstart}")"
+    if [ -n "${fmt}" ]; then
+      printf "%s\n" "${fmt}"
+      return 0
+    fi
+  fi
+
+  infer_config_format_from_path "${config_path}"
+}
+
 read_prompt_value() {
   _var_name="$1"
 
@@ -51,7 +224,7 @@ prompt() {
         echo "Tip: run the script in an interactive shell (TTY) so it can read your input." >&2
         echo "If you must run non-interactively, download to a file and pipe answers in, e.g.:" >&2
         echo "  curl -fsSL <URL> -o /tmp/setup-xray.sh" >&2
-        echo "  printf \"<service>\\n<domain>\\n<vless_port>\\n<ss_port>\\n\" | sh /tmp/setup-xray.sh" >&2
+        echo "  printf \"<service>\\n<config_path_or_empty>\\n<domain>\\n<vless_port>\\n<ss_port>\\n\" | sh /tmp/setup-xray.sh" >&2
         exit 1
       fi
       [ -n "${_prompt_value}" ] && break
@@ -396,12 +569,14 @@ ensure_root() {
 }
 
 create_config_from_template() {
-  config_dir="$1"
+  config_path="$1"
+  config_format="$2"
+
+  config_dir="$(dirname "${config_path}")"
 
   mkdir -p "${config_dir}"
   mkdir -p /var/log/xray
 
-  config_path="${config_dir}/${CONFIG_FILE_NAME}"
   extract_existing_config_values "${config_path}"
   if [ -f "${config_path}" ]; then
     echo "Detected existing config at: ${config_path}"
@@ -466,14 +641,106 @@ create_config_from_template() {
     ss_password="$(generate_ss2022_password)"
   fi
 
-  cat <<'EOF' | sed \
-    -e "s|\\\$PORT_VLESS\\\$|${port_vless}|g" \
-    -e "s|\\\$PORT_SS\\\$|${port_ss}|g" \
-    -e "s|\\\$DOMAIN\\\$|${domain}|g" \
-    -e "s|\\\$ID\\\$|${uuid}|g" \
-    -e "s|\\\$PRIVATE_KEY\\\$|${private_key}|g" \
-    -e "s|\\\$PASSWORD\\\$|${ss_password}|g" \
-    > "${config_path}"
+  if [ "${config_format}" = "json" ]; then
+    cat <<'EOF' | sed \
+      -e "s|\\\$PORT_VLESS\\\$|${port_vless}|g" \
+      -e "s|\\\$PORT_SS\\\$|${port_ss}|g" \
+      -e "s|\\\$DOMAIN\\\$|${domain}|g" \
+      -e "s|\\\$ID\\\$|${uuid}|g" \
+      -e "s|\\\$PRIVATE_KEY\\\$|${private_key}|g" \
+      -e "s|\\\$PASSWORD\\\$|${ss_password}|g" \
+      > "${config_path}"
+{
+  "log": {
+    "loglevel": "info",
+    "error": "/var/log/xray/error.log"
+  },
+  "inbounds": [
+    {
+      "tag": "vless-vision",
+      "listen": "0.0.0.0",
+      "port": $PORT_VLESS$,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "$ID$",
+            "flow": "xtls-rprx-vision"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "$DOMAIN$:443",
+          "serverNames": [
+            "$DOMAIN$"
+          ],
+          "privateKey": "$PRIVATE_KEY$",
+          "shortIds": [
+            ""
+          ]
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    },
+    {
+      "tag": "ss2022-aes128",
+      "listen": "0.0.0.0",
+      "port": $PORT_SS$,
+      "protocol": "shadowsocks",
+      "settings": {
+        "method": "2022-blake3-aes-128-gcm",
+        "password": "$PASSWORD$",
+        "network": "tcp,udp"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "settings": {}
+    },
+    {
+      "tag": "block",
+      "protocol": "blackhole",
+      "settings": {}
+    }
+  ],
+  "routing": {
+    "rules": [
+      {
+        "type": "field",
+        "inboundTag": [
+          "vless-vision",
+          "ss2022-aes128"
+        ],
+        "outboundTag": "direct"
+      }
+    ]
+  }
+}
+EOF
+  else
+    cat <<'EOF' | sed \
+      -e "s|\\\$PORT_VLESS\\\$|${port_vless}|g" \
+      -e "s|\\\$PORT_SS\\\$|${port_ss}|g" \
+      -e "s|\\\$DOMAIN\\\$|${domain}|g" \
+      -e "s|\\\$ID\\\$|${uuid}|g" \
+      -e "s|\\\$PRIVATE_KEY\\\$|${private_key}|g" \
+      -e "s|\\\$PASSWORD\\\$|${ss_password}|g" \
+      > "${config_path}"
 log:
   loglevel: info
 #  access: /var/log/xray/access.log
@@ -533,10 +800,12 @@ routing:
         - ss2022-aes128
       outboundTag: direct
 EOF
+  fi
 
   echo "Config written to: ${config_path}"
 
   XRAY_CONFIG_PATH="${config_path}"
+  XRAY_CONFIG_FORMAT="${config_format}"
   XRAY_DOMAIN="${domain}"
   XRAY_PORT_VLESS="${port_vless}"
   XRAY_PORT_SS="${port_ss}"
@@ -548,9 +817,10 @@ EOF
 
 validate_config() {
   config_path="$1"
+  config_format="$2"
 
   echo "Validating config with xray..."
-  if xray run -test -c "${config_path}" -format yaml; then
+  if xray run -test -c "${config_path}" -format "${config_format}"; then
     echo "Config validation succeeded."
   else
   echo "Config validation failed."
@@ -561,6 +831,7 @@ validate_config() {
 install_systemd_service() {
   service_name="$1"
   config_path="$2"
+  config_format="$3"
 
   service_file="/etc/systemd/system/${service_name}.service"
 
@@ -578,7 +849,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ${asset_env_line}
-ExecStart=$(command -v xray) run -c ${config_path} -format yaml
+ExecStart=$(command -v xray) run -c ${config_path} -format ${config_format}
 Restart=on-failure
 User=root
 AmbientCapabilities=CAP_NET_BIND_SERVICE
@@ -636,6 +907,7 @@ install_paru() {
 install_openrc_service() {
   service_name="$1"
   config_path="$2"
+  config_format="$3"
 
   if ! command -v rc-update >/dev/null 2>&1 || ! command -v rc-service >/dev/null 2>&1; then
     echo "OpenRC tools (rc-update / rc-service) not found; cannot install service automatically."
@@ -655,7 +927,7 @@ name="${service_name}"
 description="Xray VLESS+Reality & SS2022 service"
 
 command="$(command -v xray)"
-command_args="run -c ${config_path} -format yaml"
+command_args="run -c ${config_path} -format ${config_format}"
 command_background="yes"
 pidfile="/run/${service_name}.pid"
 rc_ulimit="-n 1048576"
@@ -714,20 +986,21 @@ EOF
 setup_service() {
   service_name="$1"
   config_path="$2"
+  config_format="$3"
 
   init="$(detect_init_system)"
 
   case "${init}" in
     systemd)
-      install_systemd_service "${service_name}" "${config_path}"
+      install_systemd_service "${service_name}" "${config_path}" "${config_format}"
       ;;
     openrc)
-      install_openrc_service "${service_name}" "${config_path}"
+      install_openrc_service "${service_name}" "${config_path}" "${config_format}"
       ;;
     *)
       echo "Could not detect supported init system (systemd or OpenRC); skipping service setup."
       echo "You can start Xray manually, for example:"
-      echo "  $(command -v xray) run -c ${config_path} --format yaml"
+      echo "  $(command -v xray) run -c ${config_path} --format ${config_format}"
       return 0
       ;;
   esac
@@ -776,19 +1049,42 @@ main() {
 
   echo "=== Xray VLESS+Reality & SS2022 setup helper ==="
   echo
-  echo "Config will be written to: ${CONFIG_DIR}/${CONFIG_FILE_NAME}"
-  existing_service_name="$(detect_existing_service_name "${CONFIG_DIR}/${CONFIG_FILE_NAME}" 2>/dev/null || true)"
-  if [ -n "${existing_service_name}" ]; then
-    prompt SERVICE_NAME "Service name (systemd/OpenRC)" "${existing_service_name}"
-  else
-    prompt SERVICE_NAME "Service name (systemd/OpenRC)" "${SERVICE_NAME_DEFAULT}"
-  fi
+  default_config_path="${CONFIG_DIR}/${CONFIG_FILE_NAME}"
+  prompt SERVICE_NAME "Service name (systemd/OpenRC)" "${SERVICE_NAME_DEFAULT}"
 
   install_xray
 
-  create_config_from_template "${CONFIG_DIR}"
-  validate_config "${XRAY_CONFIG_PATH}"
-  setup_service "${SERVICE_NAME}" "${XRAY_CONFIG_PATH}"
+  detected_config_path="$(detect_existing_service_config_path "${SERVICE_NAME}" 2>/dev/null || true)"
+
+  config_path_default="${XRAY_CONFIG_PATH:-}"
+  if [ -z "${config_path_default}" ]; then
+    config_path_default="${detected_config_path:-${default_config_path}}"
+  fi
+
+  echo "Config path (default): ${config_path_default}"
+  if [ -n "${detected_config_path}" ]; then
+    echo "Detected existing service '${SERVICE_NAME}' uses config: ${detected_config_path}"
+  fi
+  if [ -n "${XRAY_CONFIG_PATH:-}" ]; then
+    echo "XRAY_CONFIG_PATH is set; overriding config path to: ${XRAY_CONFIG_PATH}"
+  fi
+
+  prompt CONFIG_PATH "Config file path" "${config_path_default}"
+  if [ -n "${detected_config_path}" ] && [ "${CONFIG_PATH}" != "${detected_config_path}" ]; then
+    echo "Warning: service '${SERVICE_NAME}' currently uses '${detected_config_path}'."
+    echo "If systemd/OpenRC overrides ExecStart, the service may keep using the old path."
+  fi
+
+  config_format_default="${XRAY_CONFIG_FORMAT:-}"
+  if [ -z "${config_format_default}" ]; then
+    config_format_default="$(detect_existing_service_config_format "${SERVICE_NAME}" "${CONFIG_PATH}" 2>/dev/null || true)"
+  fi
+  config_format="${config_format_default:-yaml}"
+  echo "Config format: ${config_format}"
+
+  create_config_from_template "${CONFIG_PATH}" "${config_format}"
+  validate_config "${XRAY_CONFIG_PATH}" "${XRAY_CONFIG_FORMAT}"
+  setup_service "${SERVICE_NAME}" "${XRAY_CONFIG_PATH}" "${XRAY_CONFIG_FORMAT}"
 
   echo
   echo "Service '${SERVICE_NAME}' has been configured and started (if supported)."
