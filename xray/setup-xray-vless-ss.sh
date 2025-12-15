@@ -4,7 +4,7 @@ set -eu
 
 CONFIG_DIR="/usr/local/etc/xray"
 CONFIG_FILE_NAME="vless-ss-reality.yaml"
-SERVICE_NAME_DEFAULT="xray-vless-ss"
+SERVICE_NAME_DEFAULT="xray"
 
 normalize_systemd_unit_name() {
   case "$1" in
