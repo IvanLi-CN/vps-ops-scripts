@@ -179,6 +179,173 @@ detect_existing_service_config_format() {
   infer_config_format_from_path "${config_path}"
 }
 
+detect_os_pretty_name() {
+  if [ -r /etc/os-release ]; then
+    awk -F= '
+      /^PRETTY_NAME=/ {
+        val=$2
+        gsub(/^"/, "", val)
+        gsub(/"$/, "", val)
+        print val
+        exit
+      }
+    ' /etc/os-release
+    return 0
+  fi
+
+  uname -s 2>/dev/null || echo "unknown"
+}
+
+config_looks_like_vless_reality_ss2022() {
+  config_path="$1"
+
+  [ -f "${config_path}" ] || return 1
+
+  # Keep this simple: works for both YAML and JSON, and avoids relying on a YAML parser.
+  grep -q "vless-vision" "${config_path}" &&
+    grep -q "ss2022-aes128" "${config_path}" &&
+    grep -q "reality" "${config_path}" &&
+    grep -q "2022-blake3-aes-128-gcm" "${config_path}"
+}
+
+print_current_status() {
+  service_name="$1"
+  default_config_path="$2"
+
+  init="$(detect_init_system)"
+
+  echo "=== Current status ==="
+  echo "Time: $(date -u '+%Y-%m-%d %H:%M:%S UTC' 2>/dev/null || date)"
+  echo "Host: $(hostname 2>/dev/null || echo unknown)"
+  echo "OS: $(detect_os_pretty_name)"
+  echo "Kernel: $(uname -srmo 2>/dev/null || uname -a 2>/dev/null || echo unknown)"
+  echo "Init: ${init}"
+
+  if command -v xray >/dev/null 2>&1; then
+    echo "xray: $(command -v xray)"
+    v="$(xray version 2>/dev/null | sed -n '1p' || true)"
+    [ -n "${v}" ] && echo "xray version: ${v}"
+  else
+    echo "xray: not installed"
+  fi
+
+  execstart="$(detect_existing_service_execstart "${service_name}" 2>/dev/null || true)"
+  if [ -n "${execstart}" ]; then
+    echo "Service '${service_name}': detected"
+    echo "ExecStart: ${execstart}"
+  else
+    echo "Service '${service_name}': not found (will be created if supported)"
+  fi
+
+  running_config_path=""
+  running_config_format=""
+  if [ "${init}" = "systemd" ]; then
+    unit="$(normalize_systemd_unit_name "${service_name}")"
+    pid="$(systemctl show -p MainPID --value "${unit}" 2>/dev/null || true)"
+    case "${pid}" in
+      ""|0|*[!0-9]*)
+        ;;
+      *)
+        cmdline="$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
+        if [ -n "${cmdline}" ]; then
+          echo "Running PID: ${pid}"
+          echo "Running cmdline: ${cmdline}"
+          running_config_path="$(extract_xray_config_path_from_cmdline "${cmdline}" 2>/dev/null || true)"
+          running_config_format="$(extract_xray_config_format_from_cmdline "${cmdline}" 2>/dev/null || true)"
+          [ -n "${running_config_path}" ] && echo "Running config path: ${running_config_path}"
+          [ -n "${running_config_format}" ] && echo "Running config format: ${running_config_format}"
+        fi
+        ;;
+    esac
+  fi
+
+  config_path_source="service"
+  service_config_path="$(detect_existing_service_config_path "${service_name}" 2>/dev/null || true)"
+  config_path="${service_config_path}"
+  if [ -n "${running_config_path}" ]; then
+    config_path="${running_config_path}"
+    config_path_source="process"
+  elif [ -z "${config_path}" ]; then
+    config_path="${default_config_path}"
+    config_path_source="default"
+  fi
+  if [ -n "${running_config_path}" ] && [ -n "${service_config_path}" ] && [ "${running_config_path}" != "${service_config_path}" ]; then
+    echo "Warning: process config path differs from service ExecStart config path."
+    echo "  process: ${running_config_path}"
+    echo "  service:  ${service_config_path}"
+  fi
+
+  config_format_source="service/extension"
+  config_format="$(detect_existing_service_config_format "${service_name}" "${config_path}" 2>/dev/null || true)"
+  if [ -n "${running_config_format}" ]; then
+    config_format="${running_config_format}"
+    config_format_source="process"
+  fi
+  config_format="${config_format:-$(infer_config_format_from_path "${config_path}")}"
+
+  echo "Config path: ${config_path} (${config_path_source})"
+  echo "Config format: ${config_format} (${config_format_source})"
+
+  expected_ok="unknown"
+  validation_ok="unknown"
+
+  if [ -f "${config_path}" ]; then
+    if config_looks_like_vless_reality_ss2022 "${config_path}"; then
+      expected_ok="yes"
+    else
+      expected_ok="no"
+    fi
+
+    if command -v xray >/dev/null 2>&1; then
+      tmpout="$(mktemp)"
+      if xray run -test -c "${config_path}" -format "${config_format}" >"${tmpout}" 2>&1; then
+        validation_ok="yes"
+      else
+        validation_ok="no"
+        echo "Config validation output:"
+        cat "${tmpout}"
+      fi
+      rm -f "${tmpout}"
+    fi
+  else
+    echo "Config file: not found"
+  fi
+
+  service_active="unknown"
+  case "${init}" in
+    systemd)
+      unit="$(normalize_systemd_unit_name "${service_name}")"
+      service_active="$(systemctl is-active "${unit}" 2>/dev/null || true)"
+      enabled="$(systemctl is-enabled "${unit}" 2>/dev/null || true)"
+      [ -z "${enabled}" ] && enabled="unknown"
+      [ -z "${service_active}" ] && service_active="unknown"
+      echo "systemd unit: ${unit}"
+      echo "systemd active: ${service_active}"
+      echo "systemd enabled: ${enabled}"
+      ;;
+    openrc)
+      status_out="$(rc-service "${service_name}" status 2>&1 || true)"
+      echo "OpenRC status: ${status_out}"
+      if printf "%s" "${status_out}" | grep -q "started"; then
+        service_active="active"
+      else
+        service_active="inactive"
+      fi
+      ;;
+  esac
+
+  working="unknown"
+  if [ "${expected_ok}" = "yes" ] && [ "${validation_ok}" = "yes" ]; then
+    case "${service_active}" in
+      active|running) working="yes" ;;
+      inactive|failed|dead) working="no" ;;
+      *) working="unknown" ;;
+    esac
+  fi
+  echo "Expected config present: ${expected_ok}"
+  echo "Expected config working: ${working}"
+}
+
 read_prompt_value() {
   _var_name="$1"
 
@@ -833,11 +1000,21 @@ install_systemd_service() {
   config_path="$2"
   config_format="$3"
 
-  service_file="/etc/systemd/system/${service_name}.service"
+  unit="$(normalize_systemd_unit_name "${service_name}")"
+  base_name="${service_name}"
+  case "${base_name}" in
+    *.service) base_name="${base_name%.service}" ;;
+  esac
+  service_file="/etc/systemd/system/${base_name}.service"
 
   asset_env_line=""
   if [ -n "${XRAY_LOCATION_ASSET:-}" ]; then
     asset_env_line="Environment=XRAY_LOCATION_ASSET=${XRAY_LOCATION_ASSET}"
+  fi
+
+  was_active="0"
+  if systemctl is-active --quiet "${unit}" 2>/dev/null; then
+    was_active="1"
   fi
 
   cat > "${service_file}" <<EOF
@@ -864,8 +1041,14 @@ EOF
   echo "systemd service written to: ${service_file}"
 
   systemctl daemon-reload
-  systemctl enable --now "${service_name}.service"
-  systemctl --no-pager --full status "${service_name}.service" || true
+  systemctl enable --now "${unit}"
+
+  if [ "${was_active}" = "1" ]; then
+    echo "Restarting systemd service: ${unit}"
+    systemctl restart "${unit}"
+  fi
+
+  systemctl --no-pager --full status "${unit}" || true
 }
 
 detect_init_system() {
@@ -1053,6 +1236,9 @@ main() {
   prompt SERVICE_NAME "Service name (systemd/OpenRC)" "${SERVICE_NAME_DEFAULT}"
 
   install_xray
+  echo
+  print_current_status "${SERVICE_NAME}" "${default_config_path}"
+  echo
 
   detected_config_path="$(detect_existing_service_config_path "${SERVICE_NAME}" 2>/dev/null || true)"
 
